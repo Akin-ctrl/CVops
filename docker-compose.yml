@@ -1,0 +1,197 @@
+
+services:
+
+  kafka-producer: 
+    build: 
+      context: ./kafka-producers 
+      dockerfile: Dockerfile.producer
+    container_name: kafka_producer
+    network_mode: host
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      # KAFKA_BROKER: ${KAFKA_BROKER} 
+      KAFKA_BROKER: localhost:29092
+      KAFKA_TOPIC: ${KAFKA_TOPIC_1}
+      URL: ${URL}
+    restart: unless-stopped
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: kafka_zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    healthcheck:
+      test: ["CMD", "echo", "ruok", "|", "nc", "localhost", "2181"]
+      interval: 5s
+      timeout: 10s
+      retries: 5
+    volumes: 
+      - zookeeper_data:/data
+      - zookeeper_log:/datalog
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    hostname: kafka
+    container_name: kafka
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # KAFKA_TOPIC_NAME: ${KAFKA_TOPIC}
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_NUM_PARTITIONS: 1
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 1
+    healthcheck:
+      test: ["CMD", "bash", "-c", "</dev/tcp/localhost/9092 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+    volumes: 
+      - kafka_data:/var/lib/kafka/data  
+  
+  kafdrop:
+    image: obsidiandynamics/kafdrop:3.30.0
+    container_name: cv_kafdrop
+    depends_on:
+      - kafka
+    environment:
+      KAFKA_BROKERCONNECT: kafka:9092
+    ports:
+      - "19000:9000"
+    restart: unless-stopped
+  
+  kafka-preprocessor:
+    build: 
+      context: ./kafka-consumer 
+      dockerfile: Dockerfile.consumer
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKER: ${KAFKA_BROKER}
+      KAFKA_INPUT_TOPIC: ${KAFKA_TOPIC_1}
+      KAFKA_OUTPUT_TOPIC: ${KAFKA_TOPIC_2}
+      CONSUMER_GROUP_ID: ${CONSUMER_GROUP_ID_1}
+    restart: unless-stopped
+
+  kafka-viewer: 
+    build: 
+      context: ./view
+      dockerfile: Dockerfile.viewer
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKER: kafka:9092
+      KAFKA_TOPIC: ${KAFKA_TOPIC_2}
+      CONSUMER_GROUP_ID: ${CONSUMER_GROUP_ID_2}
+    ports:
+      - "5000:5000" 
+    restart: unless-stopped
+
+
+  # portainer:
+  #   image: portainer/portainer-ce:latest
+  #   container_name: cv_portainer
+  #   restart: always
+  #   ports:
+  #     - "9443:9443"
+  #   volumes:
+  #     - /var/run/docker.sock:/var/run/docker.sock
+  #     - portainer_data:/data
+
+
+ 
+  # minio:
+  #   image: minio/minio:latest
+  #   container_name: minio
+  #   ports:
+  #     - "9000:9000" # MinIO API
+  #     - "9001:9001" # MinIO Console UI
+  #   volumes:
+  #     - ./data/minio:/data
+  #   environment:
+  #     MINIO_ROOT_USER: minioadmin
+  #     MINIO_ROOT_PASSWORD: minioadmin
+  #     MINIO_CONSOLE_ADDRESS: ":9001"
+  #   command: server /data
+
+
+  # spark-master:
+  #   image: apache/spark:3.5.1
+  #   container_name: spark-master
+  #   environment:
+  #     - SPARK_MODE=master
+  #   command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.master.Master", "--host", "spark-master"]
+  #   ports:
+  #     - "7077:7077"
+  #     - "8080:8080"
+  #   healthcheck:
+  #     test: ["CMD", "curl", "-f", "http://localhost:8080"]
+  #     interval: 5s
+  #     timeout: 3s
+  #     retries: 10
+  #   volumes:
+  #     - ./apps:/opt/spark/apps
+  #     - ./data/spark:/opt/spark/data
+  #     - ~/.ivy2:/root/.ivy2
+  #     - ~/.m2:/root/.m2
+  #     - ./app:/app
+  # spark-worker:
+  #   image: apache/spark:3.5.1
+  #   container_name: spark-worker
+  #   environment:
+  #     - SPARK_MODE=worker
+  #   command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.worker.Worker", "spark://spark-master:7077"]
+  #   depends_on:
+  #     - spark-master
+  #   ports:
+  #     - "8081:8081"
+  #   volumes:
+  #     - ./apps:/opt/spark/apps
+  #     - ./data/spark:/opt/spark/data
+  #     - ~/.ivy2:/root/.ivy2
+  #     - ~/.m2:/root/.m2
+  #     - ./app:/app
+
+  # spark-submit-job:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile.sparkjob
+  #   container_name: spark-submit-job
+  #   depends_on:
+  #     spark-master:
+  #       condition: service_healthy
+  #     kafka:
+  #       condition: service_started
+  #   restart: on-failure
+
+  # trino-coordinator:
+  #   image: trinodb/trino:402
+  #   container_name: trino-coordinator
+  #   ports:
+  #     - "8088:8080" 
+  #   volumes:
+  #     - ./trino/etc:/etc/trino
+
+
+  
+volumes: 
+  zookeeper_data:
+  zookeeper_log:
+  kafka_data:
+  portainer_data:

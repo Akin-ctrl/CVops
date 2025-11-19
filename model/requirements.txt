@@ -1,0 +1,5 @@
+Ultralytics
+kafka-python
+opencv-python
+python-dotenv
+numpy
