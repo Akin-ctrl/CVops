@@ -67,7 +67,7 @@ def preprocess_frame(frame_bytes):
                     or None if decoding fails.
     """
     try:
-        # 1. Decode JPEG bytes to OpenCV image (BGR format)
+        #  Decode JPEG bytes to OpenCV image (BGR format)
         nparr = np.frombuffer(frame_bytes, np.uint8)
         frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
@@ -75,7 +75,7 @@ def preprocess_frame(frame_bytes):
             logging.warning("Failed to decode frame from bytes.")
             return None
 
-        # 2. Adaptive Contrast Enhancement (CLAHE) for varying lighting/weather
+        # Adaptive Contrast Enhancement (CLAHE) for varying lighting/weather
         # Convert BGR to LAB color space (L channel for lightness)
         lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
         l_channel, a_channel, b_channel = cv2.split(lab)
@@ -88,13 +88,13 @@ def preprocess_frame(frame_bytes):
         limg = cv2.merge([cl, a_channel, b_channel])
         frame = cv2.cvtColor(limg, cv2.COLOR_LAB2BGR) # Convert back to BGR
 
-        # 3. Convert Color Space: BGR to RGB (standard for most ML models)
+        # Convert Color Space: BGR to RGB (standard for most ML models)
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-        # 4. Resizing to YOLO's expected input dimensions
+        # Resizing to YOLO's expected input dimensions
         resized_frame = cv2.resize(frame, TARGET_YOLO_SIZE, interpolation=cv2.INTER_AREA)
 
-        # 5. Normalize pixel values to [0, 1] and convert to float32
+        # Normalize pixel values to [0, 1] and convert to float32
         normalized_frame = resized_frame.astype(np.float32) / 255.0
 
         # Output will be a NumPy array of shape (HEIGHT, WIDTH, CHANNELS), RGB, float32, range [0, 1]
@@ -122,7 +122,7 @@ def main():
 
     try:
         for message in consumer:
-            # logging.info(f"Received message from topic: {message.topic}, partition: {message.partition}, offset: {message.offset}")
+            logging.info(f"Received message from topic: {message.topic}, partition: {message.partition}, offset: {message.offset}")
             
             processed_frame_np = preprocess_frame(message.value)
             
