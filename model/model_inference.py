@@ -23,7 +23,7 @@ KAFKA_DATA_TOPIC = os.getenv("KAFKA_DATA_TOPIC", "yolo-data-output")     # For M
 
 CONSUMER_GROUP_ID = os.getenv("CONSUMER_GROUP_ID", "yolo-inference-group")
 MODEL_WEIGHTS_PATH = os.getenv("MODEL_WEIGHTS_PATH", "yolov11n.pt")
-DEVICE = os.getenv("DEVICE", "0") # Use "cpu" if no GPU
+DEVICE = os.getenv("DEVICE", "cpu") # Use "cpu" if no GPU
 
 # --- Kafka Helpers ---
 def create_kafka_consumer(kafka_broker, topic, group_id):

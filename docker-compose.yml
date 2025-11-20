@@ -1,6 +1,9 @@
 
 services:
 
+ # -------------------------------------------------------
+ # PRODUCER (CAMER STREAM INGESTOR)
+ # -------------------------------------------------------
   kafka-producer: 
     build: 
       context: ./kafka-producers 
@@ -16,6 +19,11 @@ services:
       KAFKA_TOPIC: ${KAFKA_TOPIC_1}
       URL: ${URL}
     restart: unless-stopped
+
+
+  # -------------------------------------------------------
+  # CORE INFRASTRUCTURE
+  # -------------------------------------------------------
   zookeeper:
     image: confluentinc/cp-zookeeper:7.5.0
     container_name: kafka_zookeeper
@@ -74,6 +82,11 @@ services:
       - "19000:9000"
     restart: unless-stopped
   
+
+
+  # -------------------------------------------------------
+  # PREPROCESSOR
+  # -------------------------------------------------------
   kafka-preprocessor:
     build: 
       context: ./kafka-consumer 
@@ -88,6 +101,10 @@ services:
       CONSUMER_GROUP_ID: ${CONSUMER_GROUP_ID_1}
     restart: unless-stopped
 
+
+ # -------------------------------------------------------
+ # VIEWERS
+ # -------------------------------------------------------
   kafka-viewer: 
     build: 
       context: ./view-process
@@ -102,23 +119,6 @@ services:
     ports:
       - "5000:5000" 
     restart: unless-stopped
-
-  yolo-inference:
-    build: 
-      context: ./model
-      dockerfile: Dockerfile.model
-    depends_on:
-      kafka:
-        condition: service_healthy
-    environment:
-      KAFKA_BROKER: ${KAFKA_BROKER}
-      KAFKA_INPUT_TOPIC: ${KAFKA_TOPIC_2}
-      KAFKA_VISUAL_TOPIC: ${KAFKA_TOPIC_4}
-      KAFKA_DATA_TOPIC: ${KAFKA_TOPIC_3}
-      MODEL_WEIGHTS_PATH: ${MODEL_WEIGHTS_PATH}
-      DEVICE: "0" # Set to "cpu" if you don't have Nvidia Docker setup
-    restart: unless-stopped
-
 
   detector-viewer: 
     build: 
@@ -135,6 +135,30 @@ services:
       - "7000:7000" 
     restart: unless-stopped
 
+ # -------------------------------------------------------
+ # MODEL INFERENCE
+ # -------------------------------------------------------
+  yolo-inference:
+    build: 
+      context: ./model
+      dockerfile: Dockerfile.model
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKER: ${KAFKA_BROKER}
+      KAFKA_INPUT_TOPIC: ${KAFKA_TOPIC_2}
+      KAFKA_VISUAL_TOPIC: ${KAFKA_TOPIC_4}
+      KAFKA_DATA_TOPIC: ${KAFKA_TOPIC_3}
+      MODEL_WEIGHTS_PATH: ${MODEL_WEIGHTS_PATH}
+      DEVICE: "cpu" # Set to "0" if you have Nvidia Docker setup
+    restart: unless-stopped
+
+
+  
+  # -------------------------------------------------------
+  # DATA STORAGE AND MANAGEMENT 
+  # -------------------------------------------------------
 
    # minio:
   #   image: minio/minio:latest
@@ -150,6 +174,10 @@ services:
   #     MINIO_CONSOLE_ADDRESS: ":9001"
   #   command: server /data
 
+
+  # -------------------------------------------------------
+  # MANAGEMENT INTERFACES
+  # -------------------------------------------------------
   # portainer:
   #   image: portainer/portainer-ce:latest
   #   container_name: cv_portainer
