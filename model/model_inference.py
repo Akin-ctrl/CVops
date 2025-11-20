@@ -6,8 +6,9 @@ import os
 import json
 import time
 from ultralytics import YOLO
-# from dotenv import load_dotenv
-# load_dotenv() # Not needed in Docker, env vars come from docker-compose
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # --- Configuration ---
 logging.basicConfig(level=logging.INFO,
@@ -44,8 +45,8 @@ def create_kafka_consumer(kafka_broker, topic, group_id):
 
 def create_kafka_producer(kafka_broker):
     try:
-        # We need a producer that can handle both bytes (for video) and strings (for JSON)
-        # We will encode manually in the send loop
+        # A producer that can handle both bytes (for video) and strings (for JSON)
+        # Encode manually in the send loop
         producer = KafkaProducer(
             bootstrap_servers=[kafka_broker],
             api_version=(0, 10, 1),
@@ -77,14 +78,14 @@ def main():
 
     try:
         for message in consumer:
-            # 1. Decode Image
+            # Decode Image
             nparr = np.frombuffer(message.value, np.uint8)
             frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
             if frame is None:
                 continue
 
-            # 2. Run Tracking (Inference + ID assignment)
+            # Run Tracking (Inference + ID assignment)
             # persist=True is CRITICAL for tracking to remember objects between frames
             results = model.track(source=frame, conf=0.5, iou=0.5, persist=True, verbose=False, device=DEVICE)
             

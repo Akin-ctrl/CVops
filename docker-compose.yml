@@ -90,7 +90,7 @@ services:
 
   kafka-viewer: 
     build: 
-      context: ./view
+      context: ./view-process
       dockerfile: Dockerfile.viewer
     depends_on:
       kafka:
@@ -103,6 +103,52 @@ services:
       - "5000:5000" 
     restart: unless-stopped
 
+  yolo-inference:
+    build: 
+      context: ./model
+      dockerfile: Dockerfile.model
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKER: ${KAFKA_BROKER}
+      KAFKA_INPUT_TOPIC: ${KAFKA_TOPIC_2}
+      KAFKA_VISUAL_TOPIC: ${KAFKA_TOPIC_4}
+      KAFKA_DATA_TOPIC: ${KAFKA_TOPIC_3}
+      MODEL_WEIGHTS_PATH: ${MODEL_WEIGHTS_PATH}
+      DEVICE: "0" # Set to "cpu" if you don't have Nvidia Docker setup
+    restart: unless-stopped
+
+
+  detector-viewer: 
+    build: 
+      context: ./view-detector
+      dockerfile: Dockerfile.viewer-d
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKER: kafka:9092
+      KAFKA_TOPIC: ${KAFKA_TOPIC_4}
+      CONSUMER_GROUP_ID: ${CONSUMER_GROUP_ID_4}
+    ports:
+      - "7000:7000" 
+    restart: unless-stopped
+
+
+   # minio:
+  #   image: minio/minio:latest
+  #   container_name: minio
+  #   ports:
+  #     - "9000:9000" # MinIO API
+  #     - "9001:9001" # MinIO Console UI
+  #   volumes:
+  #     - ./data/minio:/data
+  #   environment:
+  #     MINIO_ROOT_USER: minioadmin
+  #     MINIO_ROOT_PASSWORD: minioadmin
+  #     MINIO_CONSOLE_ADDRESS: ":9001"
+  #   command: server /data
 
   # portainer:
   #   image: portainer/portainer-ce:latest
@@ -116,19 +162,7 @@ services:
 
 
  
-  # minio:
-  #   image: minio/minio:latest
-  #   container_name: minio
-  #   ports:
-  #     - "9000:9000" # MinIO API
-  #     - "9001:9001" # MinIO Console UI
-  #   volumes:
-  #     - ./data/minio:/data
-  #   environment:
-  #     MINIO_ROOT_USER: minioadmin
-  #     MINIO_ROOT_PASSWORD: minioadmin
-  #     MINIO_CONSOLE_ADDRESS: ":9001"
-  #   command: server /data
+ 
 
 
   # spark-master:
