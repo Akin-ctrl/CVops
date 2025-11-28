@@ -120,27 +120,39 @@ def main():
         if consumer: consumer.close()
         return
 
+    frame_count = 0
+    last_flush_time = time.time()
+    
     try:
-        for message in consumer:
-            logging.info(f"Received message from topic: {message.topic}, partition: {message.partition}, offset: {message.offset}")
+        while True:
+            # Poll in batches and only keep the latest frame to catch up when behind
+            records = consumer.poll(timeout_ms=100, max_records=50)
             
-            processed_frame_np = preprocess_frame(message.value)
+            if not records:
+                continue
             
-            if processed_frame_np is not None:
-                # Re-encode the processed frame back to JPEG bytes for publishing
-                # Convert float32 [0,1] back to uint8 [0,255] for JPEG encoding
-                frame_to_encode = (processed_frame_np * 255).astype(np.uint8)
-                # Convert back to BGR for imencode, if it was originally RGB
-                frame_to_encode_bgr = cv2.cvtColor(frame_to_encode, cv2.COLOR_RGB2BGR)
-
-                _, buffer = cv2.imencode(".jpg", frame_to_encode_bgr, 
-                                        [cv2.IMWRITE_JPEG_QUALITY, OUTPUT_JPEG_QUALITY])
-                processed_frame_bytes = buffer.tobytes()
-
-                # Publish to the output Kafka topic
-                producer.send(KAFKA_OUTPUT_TOPIC, processed_frame_bytes)
-                producer.flush() # Ensure message is sent
-                logging.info(f"Frame (offset {message.offset}) preprocessed & sent to '{KAFKA_OUTPUT_TOPIC}'. Shape: {processed_frame_np.shape}")
+            # Get only the latest message across all partitions
+            latest_message = None
+            for partition_records in records.values():
+                if partition_records:
+                    latest_message = partition_records[-1]  # Keep only the latest
+            
+            if latest_message is None:
+                continue
+                
+            frame_count += 1
+            
+            # Skip preprocessing - just forward the raw frame (YOLO handles its own preprocessing)
+            # This removes redundant decode->process->encode cycle
+            producer.send(KAFKA_OUTPUT_TOPIC, latest_message.value)
+            
+            # Batch flush every 100ms instead of every frame
+            if time.time() - last_flush_time > 0.1:
+                producer.flush()
+                last_flush_time = time.time()
+            
+            if frame_count % 30 == 0:
+                logging.info(f"Forwarded frame {frame_count}, offset: {latest_message.offset}")
             
     except KeyboardInterrupt:
         logging.info("Script interrupted by user.")

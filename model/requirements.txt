@@ -1,5 +1,6 @@
 Ultralytics
 kafka-python
-opencv-python
+opencv-python-headless
 python-dotenv
 numpy
+lz4>=4.3.2

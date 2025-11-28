@@ -1,4 +1,4 @@
-FROM python:3.12
+FROM python:3.12-slim
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         libgl1 \
@@ -7,8 +7,11 @@ RUN apt-get update && \
     
 WORKDIR /app
 
+COPY pip_wheels/ /wheels/
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+
+
+RUN pip install --no-cache-dir --find-links=/wheels --no-index -r requirements.txt
 
 COPY detector_viewer.py .
 

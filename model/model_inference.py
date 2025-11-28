@@ -16,14 +16,12 @@ logging.basicConfig(level=logging.INFO,
 
 KAFKA_BROKER = os.getenv("KAFKA_BROKER", "kafka:9092")
 KAFKA_INPUT_TOPIC = os.getenv("KAFKA_INPUT_TOPIC", "yolo-input-frames")
-
-# Two Output Topics
-KAFKA_VISUAL_TOPIC = os.getenv("KAFKA_VISUAL_TOPIC", "yolo-visual-output") # For the Web Viewer
-KAFKA_DATA_TOPIC = os.getenv("KAFKA_DATA_TOPIC", "yolo-data-output")     # For MinIO/DB
+KAFKA_VISUAL_TOPIC = os.getenv("KAFKA_VISUAL_TOPIC", "yolo-visual-output")
+KAFKA_DATA_TOPIC = os.getenv("KAFKA_DATA_TOPIC", "yolo-data-output")
 
 CONSUMER_GROUP_ID = os.getenv("CONSUMER_GROUP_ID", "yolo-inference-group")
-MODEL_WEIGHTS_PATH = os.getenv("MODEL_WEIGHTS_PATH", "yolov11n.pt")
-DEVICE = os.getenv("DEVICE", "cpu") # Use "cpu" if no GPU
+MODEL_WEIGHTS_PATH = os.getenv("MODEL_WEIGHTS_PATH", "yolo11n.pt")
+DEVICE = os.getenv("DEVICE", "cpu")
 
 # --- Kafka Helpers ---
 def create_kafka_consumer(kafka_broker, topic, group_id):
@@ -35,7 +33,7 @@ def create_kafka_consumer(kafka_broker, topic, group_id):
             api_version=(0, 10, 1),
             auto_offset_reset='latest',
             enable_auto_commit=True,
-            value_deserializer=lambda m: m # Raw bytes (JPEG)
+            value_deserializer=lambda m: m  # raw bytes
         )
         logging.info(f"Consumer connected to {topic}")
         return consumer
@@ -45,12 +43,10 @@ def create_kafka_consumer(kafka_broker, topic, group_id):
 
 def create_kafka_producer(kafka_broker):
     try:
-        # A producer that can handle both bytes (for video) and strings (for JSON)
-        # Encode manually in the send loop
         producer = KafkaProducer(
             bootstrap_servers=[kafka_broker],
             api_version=(0, 10, 1),
-            compression_type='lz4' # Good for video frames
+            compression_type='lz4'
         )
         logging.info(f"Producer connected to {kafka_broker}")
         return producer
@@ -60,12 +56,11 @@ def create_kafka_producer(kafka_broker):
 
 # --- Main Logic ---
 def main():
-    logging.info(f"Starting YOLOv11 Inference (Tracking Mode) on {DEVICE}...")
+    logging.info(f"Starting YOLO Inference (Tracking Mode) on {DEVICE}...")
 
     consumer = create_kafka_consumer(KAFKA_BROKER, KAFKA_INPUT_TOPIC, CONSUMER_GROUP_ID)
     producer = create_kafka_producer(KAFKA_BROKER)
     
-    # Load Model
     try:
         model = YOLO(MODEL_WEIGHTS_PATH)
         model.to(DEVICE)
@@ -76,46 +71,65 @@ def main():
     if not consumer or not producer:
         return
 
-    try:
-        for message in consumer:
-            # Decode Image
-            nparr = np.frombuffer(message.value, np.uint8)
-            frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    frame_buffer = deque(maxlen=1)  # Always keep only the latest frame
 
+    # Pre-compile JPEG encoding params
+    encode_params = [cv2.IMWRITE_JPEG_QUALITY, 70]
+    frame_count = 0
+    last_log_time = time.time()
+    
+    try:
+        logging.info("Processing frames...")
+        while True:
+            # Aggressively poll to drain the queue and get the latest frame
+            records = consumer.poll(timeout_ms=50, max_records=100)
+            
+            if not records:
+                continue
+
+            # Only process the LATEST frame across all partitions (skip old ones)
+            latest_record = None
+            for partition_records in records.values():
+                if partition_records:
+                    latest_record = partition_records[-1]
+            
+            if latest_record is None:
+                continue
+
+            nparr = np.frombuffer(latest_record.value, np.uint8)
+            frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
             if frame is None:
                 continue
 
-            # Run Tracking (Inference + ID assignment)
-            # persist=True is CRITICAL for tracking to remember objects between frames
-            results = model.track(source=frame, conf=0.5, iou=0.5, persist=True, verbose=False, device=DEVICE)
+            frame_count += 1
+
+            # --- Inference with optimized settings ---
+            results = model.track(
+                source=frame, 
+                conf=0.5, 
+                iou=0.5, 
+                persist=True, 
+                verbose=False, 
+                device=DEVICE,
+                imgsz=416,  # Smaller input = faster inference
+                half=True if DEVICE != "cpu" else False  # FP16 on GPU
+            )
             
             if not results:
                 continue
-
             result = results[0]
-            
-            # --- A. Prepare Visual Output (Annotated Frame) ---
-            # plot() draws the boxes and labels on the frame
-            annotated_frame = result.plot() 
-            
-            # Encode back to JPEG
-            _, buffer = cv2.imencode(".jpg", annotated_frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
-            visual_bytes = buffer.tobytes()
-            
-            # Send to Visual Topic (Viewer)
-            producer.send(KAFKA_VISUAL_TOPIC, visual_bytes)
 
-            # --- B. Prepare Data Output (JSON) ---
+            # --- Visual Output ---
+            annotated_frame = result.plot()
+            _, buffer = cv2.imencode(".jpg", annotated_frame, encode_params)
+            producer.send(KAFKA_VISUAL_TOPIC, buffer.tobytes())
+
+            # --- JSON Data Output (optimized) ---
             detection_list = []
-            
-            # Check if we have detections
-            if result.boxes:
-                # extract boxes, classes, and track_ids (if available)
+            if result.boxes and len(result.boxes):
                 boxes = result.boxes.xyxy.cpu().numpy()
                 classes = result.boxes.cls.cpu().numpy()
                 confs = result.boxes.conf.cpu().numpy()
-                
-                # Track IDs might be None if detection exists but tracking failed momentarily
                 track_ids = result.boxes.id.int().cpu().numpy() if result.boxes.id is not None else [-1] * len(boxes)
 
                 for box, cls, conf, track_id in zip(boxes, classes, confs, track_ids):
@@ -123,20 +137,23 @@ def main():
                         "track_id": int(track_id),
                         "class_name": result.names[int(cls)],
                         "confidence": float(conf),
-                        "bbox": box.tolist() # [x1, y1, x2, y2]
+                        "bbox": box.tolist()
                     })
 
             json_payload = {
                 "timestamp": time.time(),
-                "frame_offset": message.offset,
                 "camera_id": "esp32-cam-01",
                 "detections": detection_list
             }
-
-            # Send to Data Topic (MinIO/Analytics)
             producer.send(KAFKA_DATA_TOPIC, json.dumps(json_payload).encode('utf-8'))
             
-            # logging.info(f"Processed frame {message.offset}: {len(detection_list)} objects tracked.")
+            # Log FPS every 5 seconds
+            if time.time() - last_log_time > 5:
+                elapsed = time.time() - last_log_time
+                fps = frame_count / elapsed
+                logging.info(f"Processing at {fps:.1f} FPS, latest offset: {latest_record.offset}")
+                frame_count = 0
+                last_log_time = time.time()
 
     except KeyboardInterrupt:
         logging.info("Stopping...")
