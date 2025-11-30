@@ -151,7 +151,9 @@ services:
       KAFKA_VISUAL_TOPIC: ${KAFKA_TOPIC_4}
       KAFKA_DATA_TOPIC: ${KAFKA_TOPIC_3}
       MODEL_WEIGHTS_PATH: ${MODEL_WEIGHTS_PATH}
-      DEVICE: "cpu" # Set to "0" if you have Nvidia Docker setup
+      DEVICE: "cpu"
+      USE_TRACKING: "false"  # Detection only - much faster
+      INPUT_SIZE: "320"      # Smaller = faster (320 is ~2x faster than 416)
     restart: unless-stopped
 
 
