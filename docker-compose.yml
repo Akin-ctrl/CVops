@@ -88,6 +88,7 @@ services:
   # PREPROCESSOR
   # -------------------------------------------------------
   kafka-preprocessor:
+    container_name: cv_kafka_preprocessor
     build: 
       context: ./kafka-consumer 
       dockerfile: Dockerfile.consumer
@@ -106,6 +107,7 @@ services:
  # VIEWERS
  # -------------------------------------------------------
   kafka-viewer: 
+    container_name: kafka_viewer
     build: 
       context: ./view-process
       dockerfile: Dockerfile.viewer
@@ -121,6 +123,7 @@ services:
     restart: unless-stopped
 
   detector-viewer: 
+    container_name: detector_viewer
     build: 
       context: ./view-detection
       dockerfile: Dockerfile.viewer-d
@@ -139,6 +142,7 @@ services:
  # MODEL INFERENCE
  # -------------------------------------------------------
   yolo-inference:
+    container_name: yolo_inference
     build: 
       context: ./model
       dockerfile: Dockerfile.model
@@ -150,6 +154,7 @@ services:
       KAFKA_INPUT_TOPIC: ${KAFKA_TOPIC_2}
       KAFKA_VISUAL_TOPIC: ${KAFKA_TOPIC_4}
       KAFKA_DATA_TOPIC: ${KAFKA_TOPIC_3}
+      CONSUMER_GROUP_ID: ${CONSUMER_GROUP_ID_3}
       MODEL_WEIGHTS_PATH: ${MODEL_WEIGHTS_PATH}
       DEVICE: "cpu"
       USE_TRACKING: "false"  # Detection only - much faster
@@ -162,19 +167,48 @@ services:
   # DATA STORAGE AND MANAGEMENT 
   # -------------------------------------------------------
 
-   # minio:
-  #   image: minio/minio:latest
-  #   container_name: minio
-  #   ports:
-  #     - "9000:9000" # MinIO API
-  #     - "9001:9001" # MinIO Console UI
-  #   volumes:
-  #     - ./data/minio:/data
-  #   environment:
-  #     MINIO_ROOT_USER: minioadmin
-  #     MINIO_ROOT_PASSWORD: minioadmin
-  #     MINIO_CONSOLE_ADDRESS: ":9001"
-  #   command: server /data
+
+  minio-writer:
+    container_name: minio_writer
+    build:
+      context: ./minio
+      dockerfile: Dockerfile.minio-writer
+    depends_on:
+      kafka:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKER: kafka:9092
+      KAFKA_TOPIC: ${KAFKA_TOPIC_3}
+      CONSUMER_GROUP_ID: ${CONSUMER_GROUP_ID_5}
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+      BUCKET_NAME: detections-data
+      BATCH_SIZE: 50 # Write a file after 50 detections...
+      BATCH_TIMEOUT_SEC: 30 # ...or every 30 seconds
+    restart: unless-stopped
+
+
+  minio:
+    image: minio/minio
+    container_name: minio
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000" # MinIO API
+      - "9001:9001" # MinIO Console UI
+    volumes:
+      - minio_data:/data
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+   
 
 
   # -------------------------------------------------------
@@ -191,58 +225,6 @@ services:
   #     - portainer_data:/data
 
 
- 
- 
-
-
-  # spark-master:
-  #   image: apache/spark:3.5.1
-  #   container_name: spark-master
-  #   environment:
-  #     - SPARK_MODE=master
-  #   command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.master.Master", "--host", "spark-master"]
-  #   ports:
-  #     - "7077:7077"
-  #     - "8080:8080"
-  #   healthcheck:
-  #     test: ["CMD", "curl", "-f", "http://localhost:8080"]
-  #     interval: 5s
-  #     timeout: 3s
-  #     retries: 10
-  #   volumes:
-  #     - ./apps:/opt/spark/apps
-  #     - ./data/spark:/opt/spark/data
-  #     - ~/.ivy2:/root/.ivy2
-  #     - ~/.m2:/root/.m2
-  #     - ./app:/app
-  # spark-worker:
-  #   image: apache/spark:3.5.1
-  #   container_name: spark-worker
-  #   environment:
-  #     - SPARK_MODE=worker
-  #   command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.worker.Worker", "spark://spark-master:7077"]
-  #   depends_on:
-  #     - spark-master
-  #   ports:
-  #     - "8081:8081"
-  #   volumes:
-  #     - ./apps:/opt/spark/apps
-  #     - ./data/spark:/opt/spark/data
-  #     - ~/.ivy2:/root/.ivy2
-  #     - ~/.m2:/root/.m2
-  #     - ./app:/app
-
-  # spark-submit-job:
-  #   build:
-  #     context: .
-  #     dockerfile: Dockerfile.sparkjob
-  #   container_name: spark-submit-job
-  #   depends_on:
-  #     spark-master:
-  #       condition: service_healthy
-  #     kafka:
-  #       condition: service_started
-  #   restart: on-failure
 
   # trino-coordinator:
   #   image: trinodb/trino:402
@@ -259,3 +241,4 @@ volumes:
   zookeeper_log:
   kafka_data:
   portainer_data:
+  minio_data:
