@@ -11,19 +11,19 @@ from minio.error import S3Error
 # --- Configuration ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Kafka Config
+# Kafka Configuration
 KAFKA_BROKER = os.getenv("KAFKA_BROKER", "kafka:9092")
 KAFKA_TOPIC = os.getenv("KAFKA_TOPIC", "yolo-data-output")
 CONSUMER_GROUP_ID = os.getenv("CONSUMER_GROUP_ID", "minio-writer-group")
 
-# MinIO Config
-MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "minio:9000") # Inside Docker network
+# MinIO Configuration
+MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "minio:9000") 
 MINIO_ACCESS_KEY = os.getenv("MINIO_ROOT_USER", "minioadmin")
 MINIO_SECRET_KEY = os.getenv("MINIO_ROOT_PASSWORD", "minioadmin")
 BUCKET_NAME = os.getenv("BUCKET_NAME", "detections-data")
 SECURE_CONNECTION = os.getenv("SECURE_CONNECTION", "False").lower() == "true"
 
-# Batch Config
+# Batch Configuration
 BATCH_SIZE = int(os.getenv("BATCH_SIZE", "100")) # Upload after 100 messages...
 BATCH_TIMEOUT_SEC = int(os.getenv("BATCH_TIMEOUT_SEC", "60")) # ...or after 60 seconds
 
