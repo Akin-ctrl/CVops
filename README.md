@@ -1,4 +1,4 @@
-# CoRVision - Real-Time Computer Vision Pipeline
+# CVops - Real-Time Computer Vision Pipeline
 
 [![Python 3.12](https://img.shields.io/badge/Python-3.12-blue.svg)](https://www.python.org/downloads/)
 [![Docker](https://img.shields.io/badge/Docker-Compose-2496ED.svg)](https://docs.docker.com/compose/)
