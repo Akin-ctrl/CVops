@@ -26,6 +26,7 @@ A **distributed, real-time computer vision pipeline** designed for edge-to-cloud
 - [Configuration](#configuration)
 - [Exposed Ports](#exposed-ports)
 - [Performance Optimizations](#performance-optimizations)
+- [Observability & Monitoring](#observability--monitoring)
 - [Recommended Improvements](#recommended-improvements)
 - [Use Cases](#use-cases)
 - [License](#license)
@@ -289,22 +290,50 @@ cd corvision
 nano .env
 ```
 
-### 2. Start All Services
+### 2. Build Services (First Time Only)
+
+```bash
+# Build all services to include metrics support
+docker compose build
+
+# Or build specific services
+docker compose build kafka-producer kafka-preprocessor yolo-inference minio-writer
+```
+
+### 3. Start All Services
 
 ```bash
 docker compose up -d
 ```
 
-### 3. Access Web Interfaces
+### 4. Access Web Interfaces
 
-| Service | URL |
-|---------|-----|
-| Preprocessed Frames | http://localhost:5000 |
-| Detection Results | http://localhost:7000 |
-| Kafka Management | http://localhost:19000 |
-| MinIO Console | http://localhost:9001 |
+| Service | URL | Credentials |
+|---------|-----|-------------|
+| **Grafana Dashboard** | http://localhost:3000 | admin / admin |
+| **Prometheus** | http://localhost:9090 | (none) |
+| Preprocessed Frames | http://localhost:5000 | (none) |
+| Detection Results | http://localhost:7000 | (none) |
+| Kafka Management | http://localhost:19000 | (none) |
+| MinIO Console | http://localhost:9001 | minioadmin / minioadmin |
 
-### 4. View Logs
+**First-time Grafana setup:**
+1. Login with `admin` / `admin`
+2. Change password when prompted
+3. Go to **Dashboards** → **CoRVision Overview** to see real-time metrics
+
+### 5. Verify Observability
+
+```bash
+# Check if metrics are being collected
+curl http://localhost:8000/metrics  # Producer
+curl http://localhost:8002/metrics  # YOLO Inference
+
+# Check Prometheus targets (all should show "UP")
+# Open http://localhost:9090 → Status → Targets
+```
+
+### 6. View Logs
 
 ```bash
 # All services
@@ -312,9 +341,12 @@ docker compose logs -f
 
 # Specific service
 docker compose logs -f yolo_inference
+
+# Observability services
+docker compose logs -f prometheus grafana
 ```
 
-### 5. Stop Services
+### 7. Stop Services
 
 ```bash
 docker compose down
@@ -362,6 +394,8 @@ MINIO_SECRET_KEY=minioadmin
 
 ## Exposed Ports
 
+### Core Services
+
 | Port | Service | Purpose |
 |------|---------|---------|
 | 2181 | Zookeeper | Kafka coordination |
@@ -372,6 +406,19 @@ MINIO_SECRET_KEY=minioadmin
 | 7000 | detector-viewer | Detection result stream |
 | 9000 | MinIO | S3 API |
 | 9001 | MinIO | Console UI |
+
+### Observability & Metrics
+
+| Port | Service | Purpose |
+|------|---------|---------|
+| 3000 | Grafana | Dashboards & visualization |
+| 9090 | Prometheus | Metrics database |
+| 8000 | Producer Metrics | Prometheus scrape endpoint |
+| 8001 | Preprocessor Metrics | Prometheus scrape endpoint |
+| 8002 | YOLO Metrics | Prometheus scrape endpoint |
+| 8003 | MinIO Writer Metrics | Prometheus scrape endpoint |
+| 8004 | Viewer Metrics | Prometheus scrape endpoint |
+| 8005 | Detector Viewer Metrics | Prometheus scrape endpoint |
 
 ---
 
@@ -389,6 +436,209 @@ The system includes several optimizations for real-time processing:
 
 ---
 
+## Observability & Monitoring
+
+CoRVision includes comprehensive observability with **Prometheus** for metrics collection and **Grafana** for visualization, providing real-time monitoring of the entire pipeline from ingestion to storage.
+
+### What's Included
+
+✅ **Prometheus** - Metrics collection and time-series database  
+✅ **Grafana** - Beautiful dashboards with pre-configured CoRVision Overview  
+✅ **Real-time Metrics** - FPS, latency, detections, errors, and more  
+✅ **Service Health Monitoring** - Instant visibility into service status  
+✅ **Automated Setup** - Pre-provisioned datasources and dashboards  
+
+### Quick Access
+
+After starting the system with `docker compose up -d`, access:
+
+| Service | URL | Credentials |
+|---------|-----|-------------|
+| **Grafana Dashboard** | http://localhost:3000 | admin / admin |
+| **Prometheus** | http://localhost:9090 | (none) |
+
+**First-time Grafana setup:**
+1. Login with `admin` / `admin`
+2. Change password when prompted  
+3. Navigate to **Dashboards** → **CoRVision Overview**
+4. View real-time metrics across all services
+
+### Dashboard Panels
+
+The **CoRVision Overview** dashboard provides:
+
+📊 **Processing FPS by Service** - Real-time frames per second for each microservice  
+⏱️ **Processing Latency** - Gauge showing current latency with color-coded thresholds  
+🎯 **Total Detections by Class** - Time series of detected objects (person, car, etc.)  
+✅ **Service Health** - Status indicators showing which services are up/down  
+📨 **Kafka Message Throughput** - Messages consumed/produced per second  
+❌ **Error Rate** - Errors per service over time, grouped by error type  
+
+### Observability Architecture
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                     CoRVision Services                       │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐     │
+│  │ Producer │  │Preprocess│  │   YOLO   │  │  MinIO   │     │
+│  │  :8000   │  │  :8001   │  │  :8002   │  │ Writer   │     │
+│  │          │  │          │  │          │  │  :8003   │     │
+│  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘     │
+│       │             │             │             │           │
+│       └─────────────┴─────────────┴─────────────┘           │
+│                         │ Metrics (HTTP)                     │
+│                         ▼                                    │
+│              ┌─────────────────────┐                         │
+│              │    Prometheus       │                         │
+│              │      :9090          │                         │
+│              └──────────┬──────────┘                         │
+│                         │ PromQL                             │
+│                         ▼                                    │
+│              ┌─────────────────────┐                         │
+│              │      Grafana        │                         │
+│              │       :3000         │                         │
+│              └─────────────────────┘                         │
+└──────────────────────────────────────────────────────────────┘
+```
+
+### Metrics Collected
+
+#### System-Wide Metrics
+- `corvision_frames_processed_total` - Total frames processed by each service
+- `corvision_processing_latency_ms` - Processing latency in milliseconds
+- `corvision_kafka_messages_consumed_total` - Messages consumed per topic
+- `corvision_kafka_messages_produced_total` - Messages produced per topic
+- `corvision_service_up` - Service health status (1=up, 0=down)
+- `corvision_errors_total` - Total errors by type and service
+
+#### YOLO Inference Metrics
+- `corvision_detections_total{class_name}` - Total detections per class (person, car, etc.)
+- `corvision_detection_confidence{class_name}` - Confidence score histogram
+- `corvision_inference_fps` - Real-time inference frames per second
+
+#### MinIO Writer Metrics
+- `corvision_minio_batches_written_total` - Total batches written to storage
+- `corvision_minio_records_written_total` - Total records written
+- `corvision_minio_write_duration_seconds` - Write operation duration
+
+### Verify Metrics Collection
+
+```bash
+# Check if metrics are being collected
+curl http://localhost:8000/metrics  # Producer
+curl http://localhost:8001/metrics  # Preprocessor
+curl http://localhost:8002/metrics  # YOLO Inference
+curl http://localhost:8003/metrics  # MinIO Writer
+
+# Check Prometheus targets (all should show "UP")
+# Open http://localhost:9090 → Status → Targets
+```
+
+### Useful Prometheus Queries
+
+```promql
+# Current FPS by service
+rate(corvision_frames_processed_total[1m])
+
+# Average processing latency
+avg(corvision_processing_latency_ms) by (service)
+
+# Total detections in last hour
+increase(corvision_detections_total[1h])
+
+# Service health status
+corvision_service_up == 0  # Shows down services
+
+# Top detected classes
+topk(5, sum by (class_name) (corvision_detections_total))
+```
+
+### Metrics Endpoints
+
+Each service exposes metrics at:
+
+| Service | Metrics Port | Endpoint |
+|---------|--------------|----------|
+| kafka-producer | 8000 | http://localhost:8000/metrics |
+| preprocessor | 8001 | http://localhost:8001/metrics |
+| yolo-inference | 8002 | http://localhost:8002/metrics |
+| minio-writer | 8003 | http://localhost:8003/metrics |
+| kafka-viewer | 8004 | http://localhost:8004/metrics |
+| detector-viewer | 8005 | http://localhost:8005/metrics |
+
+### Monitoring Best Practices
+
+**Key Metrics to Watch:**
+- **FPS** - Ensures real-time processing capability
+- **Latency** - Detects performance degradation early
+- **Error Rate** - Catches failures before they cascade
+- **Consumer Lag** - Prevents Kafka queue buildup
+
+**Recommended Alerts:**
+- Service downtime (immediate notification)
+- High latency (> 500ms for 5 minutes)
+- Error spikes (> 1 error/sec for 2 minutes)
+- Consumer lag (> 5000 messages for 5 minutes)
+
+### Troubleshooting
+
+#### Services Won't Start
+```bash
+# Check logs
+docker compose logs prometheus grafana
+
+# Verify configuration
+docker compose config
+
+# Restart observability stack
+docker compose restart prometheus grafana
+```
+
+#### No Data in Grafana
+1. Wait 30 seconds for first Prometheus scrape
+2. Check time range in Grafana (top-right) - set to "Last 5 minutes"
+3. Verify Prometheus datasource: **Configuration** → **Data Sources**
+4. Ensure all services are running: `docker compose ps`
+
+#### Prometheus Targets Show "DOWN"
+```bash
+# Check if service is exposing metrics
+curl http://localhost:8002/metrics
+
+# Verify service is running
+docker compose ps yolo_inference
+
+# Check Prometheus configuration
+docker compose exec prometheus cat /etc/prometheus/prometheus.yml
+```
+
+### Common Issues
+
+**Problem: Low FPS**
+```promql
+# Check which service is the bottleneck
+rate(corvision_frames_processed_total[1m]) by (service)
+```
+
+**Problem: High Latency**
+```promql
+# Identify slow services
+corvision_processing_latency_ms > 500
+```
+
+**Problem: Detection Quality Issues**
+```promql
+# Check confidence distribution
+histogram_quantile(0.5, corvision_detection_confidence)
+```
+
+### Additional Resources
+
+📖 **Full Documentation**: [OBSERVABILITY.md](./OBSERVABILITY.md) - Complete guide with advanced queries, alerting, and best practices  
+⚡ **Quick Reference**: [OBSERVABILITY_QUICKSTART.md](./OBSERVABILITY_QUICKSTART.md) - 5-minute setup guide  
+
+---
+
 ## Recommended Improvements
 
 ### 🔴 High Priority
@@ -401,17 +651,6 @@ The system includes several optimizations for real-time processing:
 | **No dead-letter queue** | Add a DLQ topic for failed messages (bad frames, inference errors) instead of silently dropping them |
 | **Single points of failure** | Run multiple replicas of stateless services (preprocessor, inference) with Kafka consumer groups for load balancing |
 | **No health endpoints** | Add `/health` and `/ready` endpoints to Flask apps for container orchestration |
-
-#### Observability & Monitoring
-
-| Gap | Solution |
-|-----|----------|
-| **No centralized logging** | Add ELK stack (Elasticsearch/Logstash/Kibana) or Loki + Grafana |
-| **No metrics** | Integrate Prometheus + Grafana for FPS, latency, queue depth, detection counts |
-| **No distributed tracing** | Add OpenTelemetry to trace a frame from ingestion to storage |
-| **Scattered logging** | Use structured JSON logging with correlation IDs per frame |
-
----
 
 ### 🟡 Medium Priority
 
@@ -482,7 +721,7 @@ The system includes several optimizations for real-time processing:
 ### 📅 Improvement Roadmap
 
 ```
-Phase 1 (Immediate):   Observability → Prometheus + Grafana dashboards
+Phase 1 (Complete):    ✅ Observability → Prometheus + Grafana dashboards
 Phase 2 (Short-term):  Reliability   → DLQ, health checks, manual Kafka commits
 Phase 3 (Medium-term): Performance   → GPU support, multi-partition Kafka
 Phase 4 (Long-term):   Scale         → Kubernetes migration, multi-camera support
@@ -536,11 +775,22 @@ corvision/
 │   ├── web_viewer.py
 │   └── requirements.txt
 │
-└── view-detection/             # Detection result viewer
-    ├── Dockerfile.viewer-d
-    ├── detector_viewer.py
-    ├── requirements.txt
-    └── pip_wheels/            # Offline dependencies
+├── view-detection/             # Detection result viewer
+│   ├── Dockerfile.viewer-d
+│   ├── detector_viewer.py
+│   ├── requirements.txt
+│   └── pip_wheels/            # Offline dependencies
+│
+├── prometheus/                 # Observability - Metrics collection
+│   └── prometheus.yml         # Scrape configuration
+│
+├── grafana/                    # Observability - Dashboards
+│   └── provisioning/
+│       ├── datasources/       # Auto-configured Prometheus
+│       └── dashboards/        # Pre-built CoRVision dashboard
+│
+├── OBSERVABILITY.md           # Complete observability guide
+└── OBSERVABILITY_QUICKSTART.md # 5-minute setup guide
 ```
 
 ---
@@ -567,3 +817,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - [Apache Kafka](https://kafka.apache.org/) for the message streaming platform
 - [MinIO](https://min.io/) for S3-compatible object storage
 - [Confluent](https://www.confluent.io/) for Kafka Docker images
+- [Prometheus](https://prometheus.io/) & [Grafana](https://grafana.com/) for observability
