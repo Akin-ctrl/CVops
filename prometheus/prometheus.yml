@@ -1,0 +1,77 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    monitor: 'corvision-monitor'
+
+scrape_configs:
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Kafka Producer metrics
+  - job_name: 'kafka-producer'
+    static_configs:
+      - targets: ['kafka-producer:8000']
+        labels:
+          service: 'producer'
+          component: 'ingestion'
+
+  # Preprocessor metrics
+  - job_name: 'kafka-preprocessor'
+    static_configs:
+      - targets: ['kafka-preprocessor:8001']
+        labels:
+          service: 'preprocessor'
+          component: 'processing'
+
+  # YOLO Inference metrics
+  - job_name: 'yolo-inference'
+    static_configs:
+      - targets: ['yolo-inference:8002']
+        labels:
+          service: 'inference'
+          component: 'ml'
+
+  # MinIO Writer metrics
+  - job_name: 'minio-writer'
+    static_configs:
+      - targets: ['minio-writer:8003']
+        labels:
+          service: 'storage'
+          component: 'persistence'
+
+  # Web Viewer metrics
+  - job_name: 'kafka-viewer'
+    static_configs:
+      - targets: ['kafka-viewer:8004']
+        labels:
+          service: 'viewer'
+          component: 'frontend'
+
+  # Detection Viewer metrics
+  - job_name: 'detector-viewer'
+    static_configs:
+      - targets: ['detector-viewer:8005']
+        labels:
+          service: 'detector-viewer'
+          component: 'frontend'
+
+  # Kafka JMX metrics
+  - job_name: 'kafka-broker'
+    static_configs:
+      - targets: ['kafka:7071']
+        labels:
+          service: 'kafka'
+          component: 'infrastructure'
+
+  # MinIO metrics
+  - job_name: 'minio'
+    metrics_path: /minio/v2/metrics/cluster
+    scheme: http
+    static_configs:
+      - targets: ['minio:9000']
+        labels:
+          service: 'minio'
+          component: 'storage'

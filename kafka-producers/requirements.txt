@@ -1,3 +1,4 @@
 opencv-python
 kafka-python
 python-dotenv
+prometheus-client

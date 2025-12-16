@@ -5,6 +5,8 @@ import logging
 import os
 import time
 from dotenv import load_dotenv
+from prometheus_client import Counter, Gauge, start_http_server
+import threading
 
 load_dotenv() 
 
@@ -16,6 +18,7 @@ KAFKA_BROKER = os.getenv("KAFKA_BROKER", "localhost:29092")
 KAFKA_INPUT_TOPIC = os.getenv("KAFKA_INPUT_TOPIC", "esp32-video")
 KAFKA_OUTPUT_TOPIC = os.getenv("KAFKA_OUTPUT_TOPIC", "yolo-input-frames") 
 CONSUMER_GROUP_ID = os.getenv("CONSUMER_GROUP_ID_1", "preprocessor-group")
+METRICS_PORT = int(os.getenv("METRICS_PORT", "8001"))
 
 # YOLO's expected input size - IMPORTANT: set these based on your YOLOv11 model config
 YOLO_INPUT_SIZE_WIDTH = int(os.getenv("YOLO_INPUT_SIZE_WIDTH", "640"))
@@ -24,6 +27,26 @@ TARGET_YOLO_SIZE = (YOLO_INPUT_SIZE_WIDTH, YOLO_INPUT_SIZE_HEIGHT)
 
 # JPEG quality for output frames (0-100)
 OUTPUT_JPEG_QUALITY = int(os.getenv("OUTPUT_JPEG_QUALITY", "85"))
+
+# Prometheus metrics
+frames_processed = Counter('corvision_frames_processed_total', 'Total frames processed', ['service'])
+messages_consumed = Counter('corvision_kafka_messages_consumed_total', 'Kafka messages consumed', ['service', 'topic'])
+messages_produced = Counter('corvision_kafka_messages_produced_total', 'Kafka messages produced', ['service', 'topic'])
+processing_latency = Gauge('corvision_processing_latency_ms', 'Processing latency in ms', ['service'])
+errors_total = Counter('corvision_errors_total', 'Total errors', ['service', 'error_type'])
+service_up = Gauge('corvision_service_up', 'Service health', ['service'])
+
+SERVICE_NAME = 'preprocessor'
+
+def start_metrics_server():
+    """Start Prometheus metrics server in background thread."""
+    try:
+        start_http_server(METRICS_PORT)
+        service_up.labels(service=SERVICE_NAME).set(1)
+        logging.info(f"Metrics server started on port {METRICS_PORT}")
+    except Exception as e:
+        logging.error(f"Failed to start metrics server: {e}")
+        service_up.labels(service=SERVICE_NAME).set(0)
 
 # --- Kafka Client Creation ---
 def create_kafka_consumer(kafka_broker, topic, group_id):
@@ -108,23 +131,32 @@ def preprocess_frame(frame_bytes):
 def main():
     """Main function to consume frames from Kafka, preprocess them, and publish to another topic."""
     logging.info("Starting Kafka preprocessor consumer script...")
+    
+    # Start metrics server in background
+    metrics_thread = threading.Thread(target=start_metrics_server, daemon=True)
+    metrics_thread.start()
 
     # Create Kafka Consumer
     consumer = create_kafka_consumer(KAFKA_BROKER, KAFKA_INPUT_TOPIC, CONSUMER_GROUP_ID)
     if not consumer:
+        service_up.labels(service=SERVICE_NAME).set(0)
         return
 
     # Create Kafka Producer for output
     producer = create_kafka_producer(KAFKA_BROKER)
     if not producer:
         if consumer: consumer.close()
+        service_up.labels(service=SERVICE_NAME).set(0)
         return
 
+    service_up.labels(service=SERVICE_NAME).set(1)
     frame_count = 0
     last_flush_time = time.time()
     
     try:
         while True:
+            start_time = time.time()
+            
             # Poll in batches and only keep the latest frame to catch up when behind
             records = consumer.poll(timeout_ms=100, max_records=50)
             
@@ -136,15 +168,22 @@ def main():
             for partition_records in records.values():
                 if partition_records:
                     latest_message = partition_records[-1]  # Keep only the latest
+                    messages_consumed.labels(service=SERVICE_NAME, topic=KAFKA_INPUT_TOPIC).inc(len(partition_records))
             
             if latest_message is None:
                 continue
                 
             frame_count += 1
+            frames_processed.labels(service=SERVICE_NAME).inc()
             
             # Skip preprocessing - just forward the raw frame (YOLO handles its own preprocessing)
             # This removes redundant decode->process->encode cycle
             producer.send(KAFKA_OUTPUT_TOPIC, latest_message.value)
+            messages_produced.labels(service=SERVICE_NAME, topic=KAFKA_OUTPUT_TOPIC).inc()
+            
+            # Update latency metric
+            latency_ms = (time.time() - start_time) * 1000
+            processing_latency.labels(service=SERVICE_NAME).set(latency_ms)
             
             # Batch flush every 100ms instead of every frame
             if time.time() - last_flush_time > 0.1:
@@ -156,7 +195,11 @@ def main():
             
     except KeyboardInterrupt:
         logging.info("Script interrupted by user.")
+    except Exception as e:
+        logging.error(f"Error in main loop: {e}")
+        errors_total.labels(service=SERVICE_NAME, error_type=type(e).__name__).inc()
     finally:
+        service_up.labels(service=SERVICE_NAME).set(0)
         logging.info("Closing Kafka consumer and producer...")
         if consumer:
             consumer.close()

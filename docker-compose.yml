@@ -18,6 +18,9 @@ services:
       KAFKA_BROKER: localhost:29092
       KAFKA_TOPIC: ${KAFKA_TOPIC_1}
       URL: ${URL}
+      METRICS_PORT: 8000
+    ports:
+      - "8000:8000"
     restart: unless-stopped
 
 
@@ -84,9 +87,6 @@ services:
   
 
 
-  # -------------------------------------------------------
-  # PREPROCESSOR
-  # -------------------------------------------------------
   kafka-preprocessor:
     container_name: cv_kafka_preprocessor
     build: 
@@ -98,6 +98,12 @@ services:
     environment:
       KAFKA_BROKER: ${KAFKA_BROKER}
       KAFKA_INPUT_TOPIC: ${KAFKA_TOPIC_1}
+      KAFKA_OUTPUT_TOPIC: ${KAFKA_TOPIC_2}
+      CONSUMER_GROUP_ID: ${CONSUMER_GROUP_ID_1}
+      METRICS_PORT: 8001
+    ports:
+      - "8001:8001"
+    restart: unless-stoppedKAFKA_TOPIC_1}
       KAFKA_OUTPUT_TOPIC: ${KAFKA_TOPIC_2}
       CONSUMER_GROUP_ID: ${CONSUMER_GROUP_ID_1}
     restart: unless-stopped
@@ -118,10 +124,10 @@ services:
       KAFKA_BROKER: kafka:9092
       KAFKA_TOPIC: ${KAFKA_TOPIC_2}
       CONSUMER_GROUP_ID: ${CONSUMER_GROUP_ID_2}
+      METRICS_PORT: 8004
     ports:
-      - "5000:5000" 
-    restart: unless-stopped
-
+      - "5000:5000"
+      - "8004:8004"
   detector-viewer: 
     container_name: detector_viewer
     build: 
@@ -134,13 +140,14 @@ services:
       KAFKA_BROKER: kafka:9092
       KAFKA_TOPIC: ${KAFKA_TOPIC_4}
       CONSUMER_GROUP_ID: ${CONSUMER_GROUP_ID_4}
+      METRICS_PORT: 8005
     ports:
+      - "7000:7000"
+      - "8005:8005"
+    restart: unless-stopped
       - "7000:7000" 
     restart: unless-stopped
 
- # -------------------------------------------------------
- # MODEL INFERENCE
- # -------------------------------------------------------
   yolo-inference:
     container_name: yolo_inference
     build: 
@@ -159,15 +166,18 @@ services:
       DEVICE: "cpu"
       USE_TRACKING: "false"  # Detection only - much faster
       INPUT_SIZE: "320"      # Smaller = faster (320 is ~2x faster than 416)
+      METRICS_PORT: 8002
+    ports:
+      - "8002:8002"
+    restart: unless-stopped
+      USE_TRACKING: "false"  # Detection only - much faster
+      INPUT_SIZE: "320"      # Smaller = faster (320 is ~2x faster than 416)
     restart: unless-stopped
 
 
   
   # -------------------------------------------------------
   # DATA STORAGE AND MANAGEMENT 
-  # -------------------------------------------------------
-
-
   minio-writer:
     container_name: minio_writer
     build:
@@ -186,6 +196,12 @@ services:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
       BUCKET_NAME: detections-data
+      BATCH_SIZE: 50 # Write a file after 50 detections...
+      BATCH_TIMEOUT_SEC: 30 # ...or every 30 seconds
+      METRICS_PORT: 8003
+    ports:
+      - "8003:8003"
+    restart: unless-stoppedns-data
       BATCH_SIZE: 50 # Write a file after 50 detections...
       BATCH_TIMEOUT_SEC: 30 # ...or every 30 seconds
     restart: unless-stopped
@@ -209,6 +225,41 @@ services:
       timeout: 20s
       retries: 3
    
+
+
+  # -------------------------------------------------------
+  # OBSERVABILITY AND MONITORING
+  # -------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:v2.48.0
+    container_name: cv_prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:10.2.2
+    container_name: cv_grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning
+    depends_on:
+      - prometheus
+    restart: unless-stopped
 
 
   # -------------------------------------------------------
@@ -242,3 +293,5 @@ volumes:
   kafka_data:
   portainer_data:
   minio_data:
+  prometheus_data:
+  grafana_data:
