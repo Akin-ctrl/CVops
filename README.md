@@ -641,37 +641,92 @@ histogram_quantile(0.5, corvision_detection_confidence)
 
 ## Recommended Improvements
 
-### 🔴 High Priority
+### ✅ Phase 2 Complete - Reliability & Fault Tolerance
 
-#### Reliability & Fault Tolerance
+| Feature | Implementation Status |
+|---------|----------------------|
+| **Health & Readiness Endpoints** | ✅ All services now expose `/health`, `/ready`, and `/metrics` endpoints for container orchestration |
+| **Manual Kafka Commits** | ✅ Replaced auto-commit with manual `consumer.commit()` after successful processing to prevent message loss |
+| **Dead Letter Queue (DLQ)** | ✅ Added three DLQ topics for error tracking: `dlq-preprocessing-errors`, `dlq-inference-errors`, `dlq-storage-errors` |
+| **Service Scaling Support** | ✅ Removed container names from scalable services, increased Kafka partitions to 3 for parallel consumption |
+| **Health State Tracking** | ✅ Each service maintains health_state dictionary tracking connection status and processing activity |
 
-| Issue | Recommendation |
-|-------|----------------|
-| **No message persistence on failure** | Enable Kafka manual commits with proper offset management. Currently using `enable_auto_commit=True` which can lose messages on crash |
-| **No dead-letter queue** | Add a DLQ topic for failed messages (bad frames, inference errors) instead of silently dropping them |
-| **Single points of failure** | Run multiple replicas of stateless services (preprocessor, inference) with Kafka consumer groups for load balancing |
-| **No health endpoints** | Add `/health` and `/ready` endpoints to Flask apps for container orchestration |
+**Testing Phase 2 Features:**
 
-### 🟡 Medium Priority
+```bash
+# Start all services
+docker compose up --build
+
+# Check health endpoints
+curl http://localhost:8000/health  # Camera producer
+curl http://localhost:8001/health  # Preprocessor
+curl http://localhost:8002/health  # YOLO inference
+curl http://localhost:8003/health  # MinIO writer
+curl http://localhost:5000/health  # Preprocessed viewer
+curl http://localhost:7000/health  # Detection viewer
+
+# Check readiness endpoints
+curl http://localhost:5000/ready  # Returns 200 if frames available
+curl http://localhost:7000/ready  # Returns 200 if detections available
+
+# Scale preprocessor service (Kafka consumer group load balancing)
+docker compose up --scale kafka-preprocessor=2
+
+# Monitor DLQ topics in Kafdrop
+open http://localhost:19000
+# Check topics: dlq-preprocessing-errors, dlq-inference-errors, dlq-storage-errors
+
+# View Prometheus metrics
+curl http://localhost:8000/metrics  # Camera producer metrics
+curl http://localhost:8002/metrics  # YOLO inference metrics
+```
+
+**Health Check Details:**
+
+| Service | Health Endpoint | Ready Check | Metrics Port |
+|---------|----------------|-------------|--------------|
+| Camera Producer | http://localhost:8000/health | Kafka connected, camera connected, frames flowing | 8000 |
+| Preprocessor | http://localhost:8001/health | Kafka consumer/producer connected, processing messages | 8001 |
+| YOLO Inference | http://localhost:8002/health | Kafka connected, model loaded, processing frames | 8002 |
+| MinIO Writer | http://localhost:8003/health | Kafka connected, MinIO connected, writing data | 8003 |
+| Preprocessed Viewer | http://localhost:5000/health | Flask running, frames available | 8004 |
+| Detection Viewer | http://localhost:7000/health | Flask running, detections available | 8005 |
+
+**DLQ Message Format:**
+
+```json
+{
+  "error": "error description",
+  "original_key": "camera_0_frame_12345_1234567890.123",
+  "offset": 12345,
+  "partition": 0,
+  "timestamp": 1234567890.123,
+  "service": "preprocessor|yolo-inference|minio-writer"
+}
+```
+
+---
+
+### � Medium Priority
 
 #### Performance & Scalability
 
-| Issue | Recommendation |
-|-------|----------------|
-| **Single Kafka partition** | Increase partitions to enable parallel consumption. Currently bottlenecked at 1 consumer per topic |
-| **CPU-only inference** | Add GPU support with NVIDIA Container Toolkit for 10-50x speedup |
-| **Frame skipping is aggressive** | Implement adaptive frame sampling based on scene changes (motion detection) rather than always taking latest |
-| **No backpressure handling** | Add metrics to detect when consumers fall behind and trigger alerts |
-| **Preprocessor does nothing** | Either remove it (direct producer→YOLO) or enable the CLAHE preprocessing that's currently bypassed |
+| Issue | Recommendation | Status |
+|-------|----------------|--------|
+| ~~**Single Kafka partition**~~ | ~~Increase partitions to enable parallel consumption~~ | ✅ **DONE** - Now using 3 partitions |
+| **CPU-only inference** | Add GPU support with NVIDIA Container Toolkit for 10-50x speedup | Planned for Phase 3 |
+| **Frame skipping is aggressive** | Implement adaptive frame sampling based on scene changes (motion detection) | Planned for Phase 4 |
+| **No backpressure handling** | Add metrics to detect when consumers fall behind and trigger alerts | Partially done - metrics exist, need alerts |
+| **Preprocessor does nothing** | Either remove it (direct producer→YOLO) or enable the CLAHE preprocessing | Under evaluation |
 
 #### Data & Storage
 
-| Issue | Recommendation |
-|-------|----------------|
-| **JSON batches hard to query** | Store in Parquet format or use a time-series DB (TimescaleDB, InfluxDB) for analytics |
-| **No frame storage** | Optionally save annotated frames to MinIO for review/debugging |
-| **No data retention policy** | Add lifecycle rules to MinIO to auto-expire old data |
-| **Hardcoded camera ID** | Make `camera_id` dynamic, support multiple cameras |
+| Issue | Recommendation | Status |
+|-------|----------------|--------|
+| **JSON batches hard to query** | Store in Parquet format or use a time-series DB (TimescaleDB, InfluxDB) | Planned for Phase 5 |
+| **No frame storage** | Optionally save annotated frames to MinIO for review/debugging | Planned for Phase 4 |
+| **No data retention policy** | Add lifecycle rules to MinIO to auto-expire old data | Planned for Phase 5 |
+| **Hardcoded camera ID** | Make `camera_id` dynamic, support multiple cameras | Planned for Phase 6 |
 
 ---
 

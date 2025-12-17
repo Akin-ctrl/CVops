@@ -64,7 +64,7 @@ services:
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
       # KAFKA_TOPIC_NAME: ${KAFKA_TOPIC}
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
-      KAFKA_NUM_PARTITIONS: 1
+      KAFKA_NUM_PARTITIONS: 3  # Increased from 1 for parallel processing
       KAFKA_DEFAULT_REPLICATION_FACTOR: 1
     healthcheck:
       test: ["CMD", "bash", "-c", "</dev/tcp/localhost/9092 >/dev/null 2>&1"]
@@ -88,7 +88,6 @@ services:
 
 
   kafka-preprocessor:
-    container_name: cv_kafka_preprocessor
     build: 
       context: ./kafka-consumer 
       dockerfile: Dockerfile.consumer
@@ -96,16 +95,24 @@ services:
       kafka:
         condition: service_healthy
     environment:
-      KAFKA_BROKER: ${KAFKA_BROKER}
+      KAFKA_BROKER: kafka:9092
       KAFKA_INPUT_TOPIC: ${KAFKA_TOPIC_1}
       KAFKA_OUTPUT_TOPIC: ${KAFKA_TOPIC_2}
+      KAFKA_DLQ_TOPIC: dlq-preprocessing-errors
       CONSUMER_GROUP_ID: ${CONSUMER_GROUP_ID_1}
+      YOLO_INPUT_SIZE_WIDTH: 416  # Optimal for CPU: 416x416 balances speed and accuracy
+      YOLO_INPUT_SIZE_HEIGHT: 416
+      OUTPUT_JPEG_QUALITY: 90  # Higher quality for better detection (85-95 recommended)
+      ENABLE_CLAHE: "true"  # Enable adaptive contrast for varying lighting conditions
       METRICS_PORT: 8001
     ports:
       - "8001:8001"
-    restart: unless-stoppedKAFKA_TOPIC_1}
-      KAFKA_OUTPUT_TOPIC: ${KAFKA_TOPIC_2}
-      CONSUMER_GROUP_ID: ${CONSUMER_GROUP_ID_1}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
     restart: unless-stopped
 
 
@@ -113,7 +120,6 @@ services:
  # VIEWERS
  # -------------------------------------------------------
   kafka-viewer: 
-    container_name: kafka_viewer
     build: 
       context: ./view-process
       dockerfile: Dockerfile.viewer
@@ -128,8 +134,13 @@ services:
     ports:
       - "5000:5000"
       - "8004:8004"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
   detector-viewer: 
-    container_name: detector_viewer
     build: 
       context: ./view-detection
       dockerfile: Dockerfile.viewer-d
@@ -144,12 +155,14 @@ services:
     ports:
       - "7000:7000"
       - "8005:8005"
-    restart: unless-stopped
-      - "7000:7000" 
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
     restart: unless-stopped
 
   yolo-inference:
-    container_name: yolo_inference
     build: 
       context: ./model
       dockerfile: Dockerfile.model
@@ -161,17 +174,20 @@ services:
       KAFKA_INPUT_TOPIC: ${KAFKA_TOPIC_2}
       KAFKA_VISUAL_TOPIC: ${KAFKA_TOPIC_4}
       KAFKA_DATA_TOPIC: ${KAFKA_TOPIC_3}
+      KAFKA_DLQ_TOPIC: dlq-inference-errors
       CONSUMER_GROUP_ID: ${CONSUMER_GROUP_ID_3}
       MODEL_WEIGHTS_PATH: ${MODEL_WEIGHTS_PATH}
       DEVICE: "cpu"
       USE_TRACKING: "false"  # Detection only - much faster
-      INPUT_SIZE: "320"      # Smaller = faster (320 is ~2x faster than 416)
+      INPUT_SIZE: "416"      # Match preprocessor output: 416x416 for CPU optimization
       METRICS_PORT: 8002
     ports:
       - "8002:8002"
-    restart: unless-stopped
-      USE_TRACKING: "false"  # Detection only - much faster
-      INPUT_SIZE: "320"      # Smaller = faster (320 is ~2x faster than 416)
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
     restart: unless-stopped
 
 
@@ -179,7 +195,6 @@ services:
   # -------------------------------------------------------
   # DATA STORAGE AND MANAGEMENT 
   minio-writer:
-    container_name: minio_writer
     build:
       context: ./minio
       dockerfile: Dockerfile.minio-writer
@@ -191,6 +206,7 @@ services:
     environment:
       KAFKA_BROKER: kafka:9092
       KAFKA_TOPIC: ${KAFKA_TOPIC_3}
+      KAFKA_DLQ_TOPIC: dlq-storage-errors
       CONSUMER_GROUP_ID: ${CONSUMER_GROUP_ID_5}
       MINIO_ENDPOINT: minio:9000
       MINIO_ROOT_USER: minioadmin
@@ -201,9 +217,11 @@ services:
       METRICS_PORT: 8003
     ports:
       - "8003:8003"
-    restart: unless-stoppedns-data
-      BATCH_SIZE: 50 # Write a file after 50 detections...
-      BATCH_TIMEOUT_SEC: 30 # ...or every 30 seconds
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
     restart: unless-stopped
 
 

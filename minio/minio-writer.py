@@ -1,14 +1,19 @@
 import json
 import os
+import sys
 import time
 import io
 import logging
 from datetime import datetime
-from kafka import KafkaConsumer
+from kafka import KafkaConsumer, KafkaProducer
 from minio import Minio
 from minio.error import S3Error
-from prometheus_client import Counter, Gauge, Histogram, start_http_server
+from prometheus_client import Counter, Gauge, Histogram
 import threading
+
+# Add parent directory to path for common imports
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+from common.health import start_health_server
 
 # --- Configuration ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -16,6 +21,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 # Kafka Configuration
 KAFKA_BROKER = os.getenv("KAFKA_BROKER", "kafka:9092")
 KAFKA_TOPIC = os.getenv("KAFKA_TOPIC", "yolo-data-output")
+KAFKA_DLQ_TOPIC = os.getenv("KAFKA_DLQ_TOPIC", "dlq-storage-errors")
 CONSUMER_GROUP_ID = os.getenv("CONSUMER_GROUP_ID", "minio-writer-group")
 METRICS_PORT = int(os.getenv("METRICS_PORT", "8003"))
 
@@ -41,14 +47,20 @@ service_up = Gauge('corvision_service_up', 'Service health', ['service'])
 
 SERVICE_NAME = 'minio-writer'
 
+# Global state for health checks
+health_state = {
+    'kafka_consumer_connected': False,
+    'kafka_producer_connected': False,
+    'minio_connected': False,
+    'writing_data': False
+}
+
 def start_metrics_server():
-    """Start Prometheus metrics server in background thread."""
+    """Start HTTP server with health, readiness, and metrics endpoints."""
     try:
-        start_http_server(METRICS_PORT)
-        service_up.labels(service=SERVICE_NAME).set(1)
-        logging.info(f"Metrics server started on port {METRICS_PORT}")
+        start_health_server(METRICS_PORT, SERVICE_NAME, health_state)
     except Exception as e:
-        logging.error(f"Failed to start metrics server: {e}")
+        logging.error(f"Failed to start HTTP server: {e}")
         service_up.labels(service=SERVICE_NAME).set(0)
 
 def get_minio_client():
@@ -65,8 +77,10 @@ def get_minio_client():
             logging.info(f"Created bucket '{BUCKET_NAME}'")
         else:
             logging.info(f"Bucket '{BUCKET_NAME}' exists")
+        health_state['minio_connected'] = True
         return client
     except Exception as e:
+        health_state['minio_connected'] = False
         logging.error(f"MinIO connection failed: {e}")
         return None
 
@@ -77,13 +91,26 @@ def get_kafka_consumer():
             bootstrap_servers=[KAFKA_BROKER],
             group_id=CONSUMER_GROUP_ID,
             auto_offset_reset='latest',
-            enable_auto_commit=True,
+            enable_auto_commit=False,  # Manual commits for reliability
             value_deserializer=lambda m: json.loads(m.decode('utf-8'))
         )
-        logging.info(f"Kafka consumer connected to {KAFKA_TOPIC}")
+        health_state['kafka_consumer_connected'] = True
+        logging.info(f"Kafka consumer connected to {KAFKA_TOPIC} (manual commits)")
         return consumer
     except Exception as e:
+        health_state['kafka_consumer_connected'] = False
         logging.error(f"Kafka connection failed: {e}")
+        return None
+
+def get_kafka_producer():
+    try:
+        producer = KafkaProducer(bootstrap_servers=[KAFKA_BROKER])
+        health_state['kafka_producer_connected'] = True
+        logging.info(f"Kafka producer connected to {KAFKA_BROKER}")
+        return producer
+    except Exception as e:
+        health_state['kafka_producer_connected'] = False
+        logging.error(f"Kafka producer connection failed: {e}")
         return None
 
 def upload_batch(minio_client, batch_data):
@@ -109,28 +136,34 @@ def upload_batch(minio_client, batch_data):
             content_type="application/json"
         )
         
-        # Update metrics
+        # Update metrics and health
         duration = time.time() - start_time
         minio_batches_written.labels(service=SERVICE_NAME).inc()
         minio_records_written.labels(service=SERVICE_NAME).inc(len(batch_data))
         minio_write_duration.labels(service=SERVICE_NAME).observe(duration)
+        health_state['writing_data'] = True
         
         logging.info(f"Uploaded batch of {len(batch_data)} records to {object_name} in {duration:.2f}s")
+        return True
         
     except Exception as e:
         logging.error(f"Failed to upload batch to MinIO: {e}")
         errors_total.labels(service=SERVICE_NAME, error_type=type(e).__name__).inc()
+        health_state['minio_connected'] = False
+        return False
 
 def main():
-    # Start metrics server in background
-    metrics_thread = threading.Thread(target=start_metrics_server, daemon=True)
-    metrics_thread.start()
+    # Start HTTP server in background (health, ready, metrics)
+    server_thread = threading.Thread(target=start_metrics_server, daemon=True)
+    server_thread.start()
     
     minio_client = get_minio_client()
     consumer = get_kafka_consumer()
+    producer = get_kafka_producer()
 
-    if not minio_client or not consumer:
+    if not minio_client or not consumer or not producer:
         service_up.labels(service=SERVICE_NAME).set(0)
+        logging.error("Exiting: Cannot connect to required services")
         return
 
     service_up.labels(service=SERVICE_NAME).set(1)
@@ -155,9 +188,36 @@ def main():
 
             # Check Trigger: Batch Size OR Time Limit
             if len(batch_buffer) >= BATCH_SIZE or (time_since_upload >= BATCH_TIMEOUT_SEC and len(batch_buffer) > 0):
-                upload_batch(minio_client, batch_buffer)
-                batch_buffer = [] # Clear buffer
-                last_upload_time = current_time
+                try:
+                    success = upload_batch(minio_client, batch_buffer)
+                    if success:
+                        # Manual commit after successful upload
+                        consumer.commit()
+                        batch_buffer = []  # Clear buffer
+                        last_upload_time = current_time
+                    else:
+                        # Send failed batch metadata to DLQ
+                        try:
+                            dlq_message = {
+                                'error': 'Failed to upload batch to MinIO',
+                                'error_type': 'MinIOUploadError',
+                                'batch_size': len(batch_buffer),
+                                'timestamp': time.time(),
+                                'service': SERVICE_NAME
+                            }
+                            producer.send(KAFKA_DLQ_TOPIC, json.dumps(dlq_message).encode())
+                            logging.warning(f"Sent upload failure to DLQ: {KAFKA_DLQ_TOPIC}")
+                        except Exception as dlq_error:
+                            logging.error(f"Failed to send to DLQ: {dlq_error}")
+                        
+                        # Still clear buffer to avoid infinite retry loop
+                        batch_buffer = []
+                        last_upload_time = current_time
+                        
+                except Exception as batch_error:
+                    logging.error(f"Batch processing error: {batch_error}")
+                    errors_total.labels(service=SERVICE_NAME, error_type=type(batch_error).__name__).inc()
+                    batch_buffer = []  # Clear to prevent blocking
 
     except KeyboardInterrupt:
         logging.info("Stopping...")
@@ -169,7 +229,15 @@ def main():
         errors_total.labels(service=SERVICE_NAME, error_type=type(e).__name__).inc()
     finally:
         service_up.labels(service=SERVICE_NAME).set(0)
-        consumer.close()
+        health_state['kafka_consumer_connected'] = False
+        health_state['kafka_producer_connected'] = False
+        health_state['minio_connected'] = False
+        health_state['writing_data'] = False
+        if consumer:
+            consumer.close()
+        if producer:
+            producer.close()
+        logging.info("Cleanup complete")
 
 if __name__ == "__main__":
     main()

@@ -3,10 +3,15 @@ import numpy as np
 from kafka import KafkaConsumer, KafkaProducer 
 import logging
 import os
+import sys
 import time
 from dotenv import load_dotenv
-from prometheus_client import Counter, Gauge, start_http_server
+from prometheus_client import Counter, Gauge
 import threading
+
+# Add parent directory to path for common imports
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+from common.health import start_health_server
 
 load_dotenv() 
 
@@ -17,6 +22,7 @@ logging.basicConfig(level=logging.INFO,
 KAFKA_BROKER = os.getenv("KAFKA_BROKER", "localhost:29092")
 KAFKA_INPUT_TOPIC = os.getenv("KAFKA_INPUT_TOPIC", "esp32-video")
 KAFKA_OUTPUT_TOPIC = os.getenv("KAFKA_OUTPUT_TOPIC", "yolo-input-frames") 
+KAFKA_DLQ_TOPIC = os.getenv("KAFKA_DLQ_TOPIC", "dlq-preprocessing-errors")
 CONSUMER_GROUP_ID = os.getenv("CONSUMER_GROUP_ID_1", "preprocessor-group")
 METRICS_PORT = int(os.getenv("METRICS_PORT", "8001"))
 
@@ -28,6 +34,10 @@ TARGET_YOLO_SIZE = (YOLO_INPUT_SIZE_WIDTH, YOLO_INPUT_SIZE_HEIGHT)
 # JPEG quality for output frames (0-100)
 OUTPUT_JPEG_QUALITY = int(os.getenv("OUTPUT_JPEG_QUALITY", "85"))
 
+# Enable CLAHE preprocessing for better detection quality in varying lighting
+# Set to "false" to use passthrough mode (faster but may miss detections in poor lighting)
+ENABLE_CLAHE = os.getenv("ENABLE_CLAHE", "true").lower() == "true"
+
 # Prometheus metrics
 frames_processed = Counter('corvision_frames_processed_total', 'Total frames processed', ['service'])
 messages_consumed = Counter('corvision_kafka_messages_consumed_total', 'Kafka messages consumed', ['service', 'topic'])
@@ -38,19 +48,24 @@ service_up = Gauge('corvision_service_up', 'Service health', ['service'])
 
 SERVICE_NAME = 'preprocessor'
 
+# Global state for health checks
+health_state = {
+    'kafka_consumer_connected': False,
+    'kafka_producer_connected': False,
+    'processing_messages': False
+}
+
 def start_metrics_server():
-    """Start Prometheus metrics server in background thread."""
+    """Start HTTP server with health, readiness, and metrics endpoints."""
     try:
-        start_http_server(METRICS_PORT)
-        service_up.labels(service=SERVICE_NAME).set(1)
-        logging.info(f"Metrics server started on port {METRICS_PORT}")
+        start_health_server(METRICS_PORT, SERVICE_NAME, health_state)
     except Exception as e:
-        logging.error(f"Failed to start metrics server: {e}")
+        logging.error(f"Failed to start HTTP server: {e}")
         service_up.labels(service=SERVICE_NAME).set(0)
 
 # --- Kafka Client Creation ---
 def create_kafka_consumer(kafka_broker, topic, group_id):
-    """Creates a Kafka consumer instance."""
+    """Creates a Kafka consumer instance with manual commit."""
     try:
         consumer = KafkaConsumer(
             topic,
@@ -58,12 +73,14 @@ def create_kafka_consumer(kafka_broker, topic, group_id):
             group_id=group_id,
             api_version=(0, 10, 1),
             auto_offset_reset='latest',
-            enable_auto_commit=True,
+            enable_auto_commit=False,  # Manual commits for reliability
             value_deserializer=lambda m: m # Messages are raw bytes (JPEG)
         )
-        logging.info(f"Consumer for topic '{topic}' connected to {kafka_broker} (group: '{group_id}')")
+        health_state['kafka_consumer_connected'] = True
+        logging.info(f"Consumer for topic '{topic}' connected to {kafka_broker} (group: '{group_id}', manual commits)")
         return consumer
     except Exception as e:
+        health_state['kafka_consumer_connected'] = False
         logging.error(f"Error creating Kafka consumer: {e}")
         return None
 
@@ -71,9 +88,11 @@ def create_kafka_producer(kafka_broker):
     """Creates a Kafka producer instance."""
     try:
         producer = KafkaProducer(bootstrap_servers=[kafka_broker])
+        health_state['kafka_producer_connected'] = True
         logging.info(f"Kafka producer connected to {kafka_broker}")
         return producer
     except Exception as e:
+        health_state['kafka_producer_connected'] = False
         logging.error(f"Error creating Kafka producer: {e}")
         return None
 
@@ -176,22 +195,70 @@ def main():
             frame_count += 1
             frames_processed.labels(service=SERVICE_NAME).inc()
             
-            # Skip preprocessing - just forward the raw frame (YOLO handles its own preprocessing)
-            # This removes redundant decode->process->encode cycle
-            producer.send(KAFKA_OUTPUT_TOPIC, latest_message.value)
-            messages_produced.labels(service=SERVICE_NAME, topic=KAFKA_OUTPUT_TOPIC).inc()
-            
-            # Update latency metric
-            latency_ms = (time.time() - start_time) * 1000
-            processing_latency.labels(service=SERVICE_NAME).set(latency_ms)
-            
-            # Batch flush every 100ms instead of every frame
-            if time.time() - last_flush_time > 0.1:
-                producer.flush()
-                last_flush_time = time.time()
-            
-            if frame_count % 30 == 0:
-                logging.info(f"Forwarded frame {frame_count}, offset: {latest_message.offset}")
+            try:
+                # Choose processing mode based on ENABLE_CLAHE flag
+                if ENABLE_CLAHE:
+                    # Apply CLAHE preprocessing for better quality in varying lighting
+                    preprocessed_frame = preprocess_frame(latest_message.value)
+                    
+                    if preprocessed_frame is not None:
+                        # Convert back to uint8 [0-255] range
+                        frame_uint8 = (preprocessed_frame * 255).astype(np.uint8)
+                        
+                        # Encode as JPEG with quality setting
+                        success, encoded_frame = cv2.imencode('.jpg', 
+                                                             cv2.cvtColor(frame_uint8, cv2.COLOR_RGB2BGR),
+                                                             [cv2.IMWRITE_JPEG_QUALITY, OUTPUT_JPEG_QUALITY])
+                        
+                        if success:
+                            producer.send(KAFKA_OUTPUT_TOPIC, encoded_frame.tobytes())
+                        else:
+                            raise Exception("Failed to encode preprocessed frame")
+                    else:
+                        raise Exception("Preprocessing returned None")
+                else:
+                    # Passthrough mode - forward raw frame (faster, YOLO handles preprocessing)
+                    producer.send(KAFKA_OUTPUT_TOPIC, latest_message.value)
+                
+                messages_produced.labels(service=SERVICE_NAME, topic=KAFKA_OUTPUT_TOPIC).inc()
+                health_state['processing_messages'] = True
+                
+                # Manual commit after successful processing
+                consumer.commit()
+                
+                # Update latency metric
+                latency_ms = (time.time() - start_time) * 1000
+                processing_latency.labels(service=SERVICE_NAME).set(latency_ms)
+                
+                # Batch flush every 100ms instead of every frame
+                if time.time() - last_flush_time > 0.1:
+                    producer.flush()
+                    last_flush_time = time.time()
+                
+                if frame_count % 30 == 0:
+                    mode = "CLAHE preprocessing" if ENABLE_CLAHE else "passthrough"
+                    logging.info(f"Forwarded frame {frame_count} ({mode}), offset: {latest_message.offset}, latency: {latency_ms:.2f}ms")
+                    
+            except Exception as process_error:
+                # Send failed message to DLQ with error metadata
+                logging.error(f"Failed to process message at offset {latest_message.offset}: {process_error}")
+                errors_total.labels(service=SERVICE_NAME, error_type=type(process_error).__name__).inc()
+                
+                try:
+                    # Add error metadata to DLQ message
+                    import json
+                    dlq_message = {
+                        'error': str(process_error),
+                        'error_type': type(process_error).__name__,
+                        'offset': latest_message.offset,
+                        'partition': latest_message.partition,
+                        'timestamp': time.time(),
+                        'service': SERVICE_NAME
+                    }
+                    producer.send(KAFKA_DLQ_TOPIC, json.dumps(dlq_message).encode())
+                    logging.warning(f"Sent failed message to DLQ: {KAFKA_DLQ_TOPIC}")
+                except Exception as dlq_error:
+                    logging.error(f"Failed to send to DLQ: {dlq_error}")
             
     except KeyboardInterrupt:
         logging.info("Script interrupted by user.")
@@ -200,6 +267,9 @@ def main():
         errors_total.labels(service=SERVICE_NAME, error_type=type(e).__name__).inc()
     finally:
         service_up.labels(service=SERVICE_NAME).set(0)
+        health_state['kafka_consumer_connected'] = False
+        health_state['kafka_producer_connected'] = False
+        health_state['processing_messages'] = False
         logging.info("Closing Kafka consumer and producer...")
         if consumer:
             consumer.close()

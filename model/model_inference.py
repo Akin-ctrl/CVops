@@ -3,13 +3,18 @@ import numpy as np
 from kafka import KafkaConsumer, KafkaProducer
 import logging
 import os
+import sys
 import json
 import time
 from ultralytics import YOLO
 from dotenv import load_dotenv
 import threading
 from queue import Queue, Empty
-from prometheus_client import Counter, Gauge, Histogram, start_http_server
+from prometheus_client import Counter, Gauge, Histogram
+
+# Add parent directory to path for common imports
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+from common.health import start_health_server
 
 load_dotenv()
 
@@ -21,6 +26,7 @@ KAFKA_BROKER = os.getenv("KAFKA_BROKER", "kafka:9092")
 KAFKA_INPUT_TOPIC = os.getenv("KAFKA_INPUT_TOPIC", "yolo-input-frames")
 KAFKA_VISUAL_TOPIC = os.getenv("KAFKA_VISUAL_TOPIC", "yolo-visual-output")
 KAFKA_DATA_TOPIC = os.getenv("KAFKA_DATA_TOPIC", "yolo-data-output")
+KAFKA_DLQ_TOPIC = os.getenv("KAFKA_DLQ_TOPIC", "dlq-inference-errors")
 
 CONSUMER_GROUP_ID = os.getenv("CONSUMER_GROUP_ID", "yolo-inference-group")
 MODEL_WEIGHTS_PATH = os.getenv("MODEL_WEIGHTS_PATH", "yolo11n.pt")
@@ -45,14 +51,20 @@ service_up = Gauge('corvision_service_up', 'Service health', ['service'])
 
 SERVICE_NAME = 'yolo-inference'
 
+# Global state for health checks
+health_state = {
+    'kafka_consumer_connected': False,
+    'kafka_producer_connected': False,
+    'model_loaded': False,
+    'processing_frames': False
+}
+
 def start_metrics_server():
-    """Start Prometheus metrics server in background thread."""
+    """Start HTTP server with health, readiness, and metrics endpoints."""
     try:
-        start_http_server(METRICS_PORT)
-        service_up.labels(service=SERVICE_NAME).set(1)
-        logging.info(f"Metrics server started on port {METRICS_PORT}")
+        start_health_server(METRICS_PORT, SERVICE_NAME, health_state)
     except Exception as e:
-        logging.error(f"Failed to start metrics server: {e}")
+        logging.error(f"Failed to start HTTP server: {e}")
         service_up.labels(service=SERVICE_NAME).set(0)
 
 # --- Kafka Helpers ---
@@ -64,14 +76,16 @@ def create_kafka_consumer(kafka_broker, topic, group_id):
             group_id=group_id,
             api_version=(0, 10, 1),
             auto_offset_reset='latest',
-            enable_auto_commit=True,
+            enable_auto_commit=False,  # Manual commits for reliability
             fetch_max_bytes=1048576,  # 1MB max fetch
             max_partition_fetch_bytes=524288,  # 512KB per partition
             value_deserializer=lambda m: m  # raw bytes
         )
-        logging.info(f"Consumer connected to {topic}")
+        health_state['kafka_consumer_connected'] = True
+        logging.info(f"Consumer connected to {topic} (manual commits)")
         return consumer
     except Exception as e:
+        health_state['kafka_consumer_connected'] = False
         logging.error(f"Error creating consumer: {e}")
         return None
 
@@ -82,9 +96,11 @@ def create_kafka_producer(kafka_broker):
             api_version=(0, 10, 1),
             compression_type='lz4'
         )
+        health_state['kafka_producer_connected'] = True
         logging.info(f"Producer connected to {kafka_broker}")
         return producer
     except Exception as e:
+        health_state['kafka_producer_connected'] = False
         logging.error(f"Error creating producer: {e}")
         return None
 
@@ -140,12 +156,14 @@ def main():
     try:
         model = YOLO(MODEL_WEIGHTS_PATH)
         model.to(DEVICE)
+        health_state['model_loaded'] = True
         # Warmup the model
         logging.info("Warming up model...")
         dummy = np.zeros((INPUT_SIZE, INPUT_SIZE, 3), dtype=np.uint8)
         model.predict(dummy, imgsz=INPUT_SIZE, verbose=False)
         logging.info("Model ready!")
     except Exception as e:
+        health_state['model_loaded'] = False
         logging.error(f"Failed to load model: {e}")
         errors_total.labels(service=SERVICE_NAME, error_type='ModelLoadError').inc()
         service_up.labels(service=SERVICE_NAME).set(0)
@@ -181,82 +199,105 @@ def main():
 
             messages_consumed.labels(service=SERVICE_NAME, topic=KAFKA_INPUT_TOPIC).inc()
             
-            nparr = np.frombuffer(frame_bytes, np.uint8)
-            frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-            if frame is None:
-                errors_total.labels(service=SERVICE_NAME, error_type='FrameDecodeError').inc()
-                continue
+            try:
+                nparr = np.frombuffer(frame_bytes, np.uint8)
+                frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                if frame is None:
+                    errors_total.labels(service=SERVICE_NAME, error_type='FrameDecodeError').inc()
+                    continue
 
-            frame_count += 1
-            frames_processed.labels(service=SERVICE_NAME).inc()
-            last_offset = offset
+                frame_count += 1
+                frames_processed.labels(service=SERVICE_NAME).inc()
+                health_state['processing_frames'] = True
+                last_offset = offset
 
-            # --- Inference with optimized settings ---
-            if USE_TRACKING:
-                results = model.track(
-                    source=frame, 
-                    conf=0.4,  # Lower conf = faster NMS
-                    iou=0.5, 
-                    persist=True, 
-                    verbose=False, 
-                    device=DEVICE,
-                    imgsz=INPUT_SIZE,
-                    half=True if DEVICE != "cpu" else False
-                )
-            else:
-                # Simple detection is MUCH faster than tracking
-                results = model.predict(
-                    source=frame, 
-                    conf=0.4,
-                    iou=0.5, 
-                    verbose=False, 
-                    device=DEVICE,
-                    imgsz=INPUT_SIZE,
-                    half=True if DEVICE != "cpu" else False
-                )
-            
-            if not results:
-                continue
-            result = results[0]
+                # --- Inference with optimized settings ---
+                if USE_TRACKING:
+                    results = model.track(
+                        source=frame, 
+                        conf=0.4,  # Lower conf = faster NMS
+                        iou=0.5, 
+                        persist=True, 
+                        verbose=False, 
+                        device=DEVICE,
+                        imgsz=INPUT_SIZE,
+                        half=True if DEVICE != "cpu" else False
+                    )
+                else:
+                    # Simple detection is MUCH faster than tracking
+                    results = model.predict(
+                        source=frame, 
+                        conf=0.4,
+                        iou=0.5, 
+                        verbose=False, 
+                        device=DEVICE,
+                        imgsz=INPUT_SIZE,
+                        half=True if DEVICE != "cpu" else False
+                    )
+                
+                if not results:
+                    continue
+                result = results[0]
 
-            # --- Visual Output ---
-            annotated_frame = result.plot()
-            _, buffer = cv2.imencode(".jpg", annotated_frame, encode_params)
-            producer.send(KAFKA_VISUAL_TOPIC, buffer.tobytes())
-            messages_produced.labels(service=SERVICE_NAME, topic=KAFKA_VISUAL_TOPIC).inc()
+                # --- Visual Output ---
+                annotated_frame = result.plot()
+                _, buffer = cv2.imencode(".jpg", annotated_frame, encode_params)
+                producer.send(KAFKA_VISUAL_TOPIC, buffer.tobytes())
+                messages_produced.labels(service=SERVICE_NAME, topic=KAFKA_VISUAL_TOPIC).inc()
 
-            # --- JSON Data Output (optimized) ---
-            detection_list = []
-            if result.boxes and len(result.boxes):
-                boxes = result.boxes.xyxy.cpu().numpy()
-                classes = result.boxes.cls.cpu().numpy()
-                confs = result.boxes.conf.cpu().numpy()
-                track_ids = result.boxes.id.int().cpu().numpy() if result.boxes.id is not None else [-1] * len(boxes)
+                # --- JSON Data Output (optimized) ---
+                detection_list = []
+                if result.boxes and len(result.boxes):
+                    boxes = result.boxes.xyxy.cpu().numpy()
+                    classes = result.boxes.cls.cpu().numpy()
+                    confs = result.boxes.conf.cpu().numpy()
+                    track_ids = result.boxes.id.int().cpu().numpy() if result.boxes.id is not None else [-1] * len(boxes)
 
-                for box, cls, conf, track_id in zip(boxes, classes, confs, track_ids):
-                    class_name = result.names[int(cls)]
-                    detection_list.append({
-                        "track_id": int(track_id),
-                        "class_name": class_name,
-                        "confidence": float(conf),
-                        "bbox": box.tolist()
-                    })
-                    
-                    # Update detection metrics
-                    detections_total.labels(class_name=class_name).inc()
-                    detection_confidence.labels(class_name=class_name).observe(float(conf))
+                    for box, cls, conf, track_id in zip(boxes, classes, confs, track_ids):
+                        class_name = result.names[int(cls)]
+                        detection_list.append({
+                            "track_id": int(track_id),
+                            "class_name": class_name,
+                            "confidence": float(conf),
+                            "bbox": box.tolist()
+                        })
+                        
+                        # Update detection metrics
+                        detections_total.labels(class_name=class_name).inc()
+                        detection_confidence.labels(class_name=class_name).observe(float(conf))
 
-            json_payload = {
-                "timestamp": time.time(),
-                "camera_id": "esp32-cam-01",
-                "detections": detection_list
-            }
-            producer.send(KAFKA_DATA_TOPIC, json.dumps(json_payload).encode('utf-8'))
-            messages_produced.labels(service=SERVICE_NAME, topic=KAFKA_DATA_TOPIC).inc()
-            
-            # Update latency metric
-            latency_ms = (time.time() - loop_start) * 1000
-            processing_latency.labels(service=SERVICE_NAME).set(latency_ms)
+                json_payload = {
+                    "timestamp": time.time(),
+                    "camera_id": "esp32-cam-01",
+                    "detections": detection_list
+                }
+                producer.send(KAFKA_DATA_TOPIC, json.dumps(json_payload).encode('utf-8'))
+                messages_produced.labels(service=SERVICE_NAME, topic=KAFKA_DATA_TOPIC).inc()
+                
+                # Manual commit after successful processing
+                consumer.commit()
+                
+                # Update latency metric
+                latency_ms = (time.time() - loop_start) * 1000
+                processing_latency.labels(service=SERVICE_NAME).set(latency_ms)
+                
+            except Exception as process_error:
+                # Send failed message to DLQ
+                logging.error(f"Failed to process frame at offset {offset}: {process_error}")
+                errors_total.labels(service=SERVICE_NAME, error_type=type(process_error).__name__).inc()
+                
+                try:
+                    dlq_message = {
+                        'error': str(process_error),
+                        'error_type': type(process_error).__name__,
+                        'offset': offset,
+                        'timestamp': time.time(),
+                        'service': SERVICE_NAME
+                    }
+                    producer.send(KAFKA_DLQ_TOPIC, json.dumps(dlq_message).encode())
+                    logging.warning(f"Sent failed frame to DLQ: {KAFKA_DLQ_TOPIC}")
+                except Exception as dlq_error:
+                    logging.error(f"Failed to send to DLQ: {dlq_error}")
             
             # Log FPS every 5 seconds
             if time.time() - last_log_time > 5:
@@ -274,9 +315,14 @@ def main():
         errors_total.labels(service=SERVICE_NAME, error_type=type(e).__name__).inc()
     finally:
         service_up.labels(service=SERVICE_NAME).set(0)
+        health_state['kafka_consumer_connected'] = False
+        health_state['kafka_producer_connected'] = False
+        health_state['model_loaded'] = False
+        health_state['processing_frames'] = False
         grabber.stop()
         consumer.close()
         producer.close()
+        logging.info("Cleanup complete")
 
 if __name__ == "__main__":
     main()

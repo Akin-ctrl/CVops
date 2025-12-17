@@ -58,6 +58,22 @@ def index():
     </html>
     """
 
+@app.route('/health')
+def health():
+    """Health check endpoint."""
+    return {'status': 'healthy', 'service': 'detection-viewer'}, 200
+
+@app.route('/ready')
+def ready():
+    """Readiness check - has frames?"""
+    with lock:
+        has_frames = len(frame_buffer) > 0
+    return {
+        'status': 'ready' if has_frames else 'not_ready',
+        'service': 'detection-viewer',
+        'checks': {'frames_available': has_frames}
+    }, 200 if has_frames else 503
+
 @app.route('/video_feed')
 def video_feed():
     return Response(generate_stream(), mimetype='multipart/x-mixed-replace; boundary=frame')

@@ -90,6 +90,22 @@ def index():
     </html>
     """
 
+@app.route('/health')
+def health():
+    """Health check endpoint."""
+    return {'status': 'healthy', 'service': 'preprocessed-viewer'}, 200
+
+@app.route('/ready')
+def ready():
+    """Readiness check - has frames?"""
+    with frame_lock:
+        has_frames = current_frame_bytes is not None
+    return {
+        'status': 'ready' if has_frames else 'not_ready',
+        'service': 'preprocessed-viewer',
+        'checks': {'frames_available': has_frames}
+    }, 200 if has_frames else 503
+
 if __name__ == '__main__':
     # Start the Kafka consumer in a separate thread
     consumer_thread = threading.Thread(target=kafka_consumer_thread, daemon=True)
