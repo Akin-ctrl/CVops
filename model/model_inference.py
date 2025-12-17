@@ -15,6 +15,10 @@ from prometheus_client import Counter, Gauge, Histogram
 # Add parent directory to path for common imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from common.health import start_health_server
+from common.gpu_utils import (
+    check_cuda_available, get_gpu_info, get_gpu_stats,
+    select_best_device, log_device_info, get_device_info_for_health
+)
 
 load_dotenv()
 
@@ -49,6 +53,14 @@ detection_confidence = Histogram('corvision_detection_confidence', 'Detection co
 errors_total = Counter('corvision_errors_total', 'Total errors', ['service', 'error_type'])
 service_up = Gauge('corvision_service_up', 'Service health', ['service'])
 
+# GPU-specific metrics
+gpu_available = Gauge('corvision_gpu_available', 'GPU availability', ['service'])
+gpu_utilization = Gauge('corvision_gpu_utilization_percent', 'GPU utilization percentage', ['service', 'gpu_id'])
+gpu_memory_used = Gauge('corvision_gpu_memory_used_mb', 'GPU memory used in MB', ['service', 'gpu_id'])
+gpu_memory_total = Gauge('corvision_gpu_memory_total_mb', 'GPU memory total in MB', ['service', 'gpu_id'])
+gpu_temperature = Gauge('corvision_gpu_temperature_celsius', 'GPU temperature in Celsius', ['service', 'gpu_id'])
+inference_speedup = Gauge('corvision_inference_speedup_factor', 'Inference speedup vs CPU', ['service'])
+
 SERVICE_NAME = 'yolo-inference'
 
 # Global state for health checks
@@ -56,7 +68,9 @@ health_state = {
     'kafka_consumer_connected': False,
     'kafka_producer_connected': False,
     'model_loaded': False,
-    'processing_frames': False
+    'processing_frames': False,
+    'gpu_available': False,
+    'device_type': 'unknown'
 }
 
 def start_metrics_server():
@@ -149,13 +163,28 @@ def main():
     # Start metrics server in background
     metrics_thread = threading.Thread(target=start_metrics_server, daemon=True)
     metrics_thread.start()
+    
+    # Log device information
+    log_device_info()
+    
+    # Auto-select best device (GPU if available, CPU fallback)
+    selected_device = select_best_device(DEVICE)
+    logging.info(f"Selected device: {selected_device}")
+    
+    # Update health state with device info
+    gpu_info = get_gpu_info()
+    health_state['gpu_available'] = gpu_info['cuda_available']
+    health_state['device_type'] = 'gpu' if 'cuda' in selected_device else 'cpu'
+    
+    # Set GPU availability metric
+    gpu_available.labels(service=SERVICE_NAME).set(1 if gpu_info['cuda_available'] else 0)
 
     consumer = create_kafka_consumer(KAFKA_BROKER, KAFKA_INPUT_TOPIC, CONSUMER_GROUP_ID)
     producer = create_kafka_producer(KAFKA_BROKER)
     
     try:
         model = YOLO(MODEL_WEIGHTS_PATH)
-        model.to(DEVICE)
+        model.to(selected_device)
         health_state['model_loaded'] = True
         # Warmup the model
         logging.info("Warming up model...")
@@ -185,8 +214,29 @@ def main():
     last_log_time = time.time()
     last_offset = 0
     
+    # Track baseline CPU performance for speedup calculation
+    cpu_baseline_latency = None
+    
     try:
         logging.info("Processing frames...")
+        
+        # Background stats updater for GPU metrics
+        def update_gpu_stats():
+            while True:
+                if health_state['gpu_available']:
+                    stats = get_gpu_stats()
+                    if stats['available']:
+                        for gpu in stats['gpus']:
+                            gpu_id = str(gpu['id'])
+                            gpu_utilization.labels(service=SERVICE_NAME, gpu_id=gpu_id).set(gpu['utilization_percent'])
+                            gpu_memory_used.labels(service=SERVICE_NAME, gpu_id=gpu_id).set(gpu['memory_used_mb'])
+                            gpu_memory_total.labels(service=SERVICE_NAME, gpu_id=gpu_id).set(gpu['memory_total_mb'])
+                            gpu_temperature.labels(service=SERVICE_NAME, gpu_id=gpu_id).set(gpu['temperature_c'])
+                time.sleep(5)  # Update every 5 seconds
+        
+        if health_state['gpu_available']:
+            gpu_stats_thread = threading.Thread(target=update_gpu_stats, daemon=True)
+            gpu_stats_thread.start()
         while True:
             loop_start = time.time()
             

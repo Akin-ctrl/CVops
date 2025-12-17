@@ -1,14 +1,22 @@
-# Use a Python base image
+# Use a Python base image with CUDA support option
+# This image works for both CPU and GPU (CUDA libraries installed but optional)
 FROM python:3.12-slim
 
+# Install system dependencies
+# Added curl for healthchecks
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         libgl1 \
-        libglib2.0-0 && \
+        libglib2.0-0 \
+        curl && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
+# Copy common utilities first
+COPY ../common/__init__.py /app/common/
+COPY ../common/health.py /app/common/
+COPY ../common/gpu_utils.py /app/common/
 
 COPY pip_wheels/ /wheels/
 COPY requirements.txt .

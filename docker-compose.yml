@@ -177,7 +177,7 @@ services:
       KAFKA_DLQ_TOPIC: dlq-inference-errors
       CONSUMER_GROUP_ID: ${CONSUMER_GROUP_ID_3}
       MODEL_WEIGHTS_PATH: ${MODEL_WEIGHTS_PATH}
-      DEVICE: "cpu"
+      DEVICE: "auto"  # Auto-detect GPU, fallback to CPU
       USE_TRACKING: "false"  # Detection only - much faster
       INPUT_SIZE: "416"      # Match preprocessor output: 416x416 for CPU optimization
       METRICS_PORT: 8002
@@ -189,6 +189,14 @@ services:
       timeout: 10s
       retries: 3
     restart: unless-stopped
+    # GPU support (uncomment when NVIDIA Container Toolkit is installed)
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
 
 
   
