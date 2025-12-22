@@ -104,6 +104,9 @@ services:
       YOLO_INPUT_SIZE_HEIGHT: 416
       OUTPUT_JPEG_QUALITY: 90  # Higher quality for better detection (85-95 recommended)
       ENABLE_CLAHE: "true"  # Enable adaptive contrast for varying lighting conditions
+      ENABLE_MOTION_DETECTION: "true"  # Skip static frames to reduce processing load
+      MOTION_THRESHOLD: "5.0"  # Percentage of pixels changed to consider motion (1-20 typical)
+      MIN_FRAME_INTERVAL: "0.5"  # Minimum seconds between frames (prevent indefinite skipping)
       METRICS_PORT: 8001
     ports:
       - "8001:8001"
@@ -214,14 +217,18 @@ services:
     environment:
       KAFKA_BROKER: kafka:9092
       KAFKA_TOPIC: ${KAFKA_TOPIC_3}
+      KAFKA_VISUAL_TOPIC: yolo-visual-output
       KAFKA_DLQ_TOPIC: dlq-storage-errors
       CONSUMER_GROUP_ID: ${CONSUMER_GROUP_ID_5}
+      FRAMES_CONSUMER_GROUP: frames-saver-group
       MINIO_ENDPOINT: minio:9000
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
       BUCKET_NAME: detections-data
+      FRAMES_BUCKET_NAME: annotated-frames
       BATCH_SIZE: 50 # Write a file after 50 detections...
       BATCH_TIMEOUT_SEC: 30 # ...or every 30 seconds
+      SAVE_ANNOTATED_FRAMES: "true"  # Save annotated frames to MinIO for review
       METRICS_PORT: 8003
     ports:
       - "8003:8003"

@@ -38,8 +38,15 @@ OUTPUT_JPEG_QUALITY = int(os.getenv("OUTPUT_JPEG_QUALITY", "85"))
 # Set to "false" to use passthrough mode (faster but may miss detections in poor lighting)
 ENABLE_CLAHE = os.getenv("ENABLE_CLAHE", "true").lower() == "true"
 
+# Adaptive frame sampling - skip frames when scene is static (motion detection)
+ENABLE_MOTION_DETECTION = os.getenv("ENABLE_MOTION_DETECTION", "true").lower() == "true"
+MOTION_THRESHOLD = float(os.getenv("MOTION_THRESHOLD", "5.0"))  # Percentage of pixels changed
+MIN_FRAME_INTERVAL = float(os.getenv("MIN_FRAME_INTERVAL", "0.5"))  # Minimum seconds between frames
+
 # Prometheus metrics
 frames_processed = Counter('corvision_frames_processed_total', 'Total frames processed', ['service'])
+frames_skipped = Counter('corvision_frames_skipped_total', 'Total frames skipped by motion detection', ['service'])
+motion_score = Gauge('corvision_motion_score_percent', 'Motion detection score (% pixels changed)', ['service'])
 messages_consumed = Counter('corvision_kafka_messages_consumed_total', 'Kafka messages consumed', ['service', 'topic'])
 messages_produced = Counter('corvision_kafka_messages_produced_total', 'Kafka messages produced', ['service', 'topic'])
 processing_latency = Gauge('corvision_processing_latency_ms', 'Processing latency in ms', ['service'])
@@ -52,8 +59,13 @@ SERVICE_NAME = 'preprocessor'
 health_state = {
     'kafka_consumer_connected': False,
     'kafka_producer_connected': False,
-    'processing_messages': False
+    'processing_messages': False,
+    'motion_detection_enabled': ENABLE_MOTION_DETECTION
 }
+
+# Motion detection state
+previous_frame_gray = None
+last_sent_time = 0
 
 def start_metrics_server():
     """Start HTTP server with health, readiness, and metrics endpoints."""
@@ -146,10 +158,89 @@ def preprocess_frame(frame_bytes):
         logging.error(f"Error during frame preprocessing: {e}")
         return None
 
+def calculate_motion_score(current_frame_gray, previous_frame_gray):
+    """
+    Calculate motion score between current and previous frame using frame differencing.
+    
+    Args:
+        current_frame_gray: Grayscale current frame
+        previous_frame_gray: Grayscale previous frame
+    
+    Returns:
+        float: Motion score as percentage of pixels changed (0-100)
+    """
+    try:
+        # Calculate absolute difference
+        frame_diff = cv2.absdiff(current_frame_gray, previous_frame_gray)
+        
+        # Apply threshold to get binary mask of changed pixels
+        _, thresh = cv2.threshold(frame_diff, 25, 255, cv2.THRESH_BINARY)
+        
+        # Calculate percentage of changed pixels
+        total_pixels = thresh.shape[0] * thresh.shape[1]
+        changed_pixels = cv2.countNonZero(thresh)
+        motion_percentage = (changed_pixels / total_pixels) * 100
+        
+        return motion_percentage
+    except Exception as e:
+        logging.error(f"Error calculating motion score: {e}")
+        return 100.0  # Return high score on error to avoid skipping frames
+
+def should_send_frame(current_frame_bytes, previous_frame_gray_ref, last_sent_time_ref):
+    """
+    Determine if frame should be sent based on motion detection and time interval.
+    
+    Args:
+        current_frame_bytes: Raw JPEG bytes of current frame
+        previous_frame_gray_ref: Reference to previous grayscale frame (list with 1 element)
+        last_sent_time_ref: Reference to last sent timestamp (list with 1 element)
+    
+    Returns:
+        tuple: (should_send: bool, motion_score: float, current_gray: np.ndarray or None)
+    """
+    if not ENABLE_MOTION_DETECTION:
+        return True, 0.0, None
+    
+    try:
+        # Decode frame to grayscale for motion detection
+        nparr = np.frombuffer(current_frame_bytes, np.uint8)
+        frame = cv2.imdecode(nparr, cv2.IMREAD_GRAYSCALE)
+        
+        if frame is None:
+            return True, 0.0, None  # Send if decode fails
+        
+        # Resize to smaller size for faster motion detection (640x360 is good balance)
+        frame_gray = cv2.resize(frame, (640, 360), interpolation=cv2.INTER_AREA)
+        
+        current_time = time.time()
+        
+        # Always send if no previous frame or minimum interval elapsed
+        if previous_frame_gray_ref[0] is None:
+            return True, 100.0, frame_gray
+        
+        # Calculate motion score
+        score = calculate_motion_score(frame_gray, previous_frame_gray_ref[0])
+        
+        # Send frame if:
+        # 1. Motion score exceeds threshold, OR
+        # 2. Minimum time interval has elapsed (prevent indefinite skipping)
+        time_since_last = current_time - last_sent_time_ref[0]
+        should_send = (score >= MOTION_THRESHOLD) or (time_since_last >= MIN_FRAME_INTERVAL)
+        
+        return should_send, score, frame_gray
+        
+    except Exception as e:
+        logging.error(f"Error in motion detection: {e}")
+        return True, 0.0, None  # Send on error to avoid blocking pipeline
+
 # --- Main Logic ---
 def main():
     """Main function to consume frames from Kafka, preprocess them, and publish to another topic."""
     logging.info("Starting Kafka preprocessor consumer script...")
+    logging.info(f"Motion detection: {'ENABLED' if ENABLE_MOTION_DETECTION else 'DISABLED'}")
+    logging.info(f"CLAHE preprocessing: {'ENABLED' if ENABLE_CLAHE else 'DISABLED (passthrough)'}")
+    if ENABLE_MOTION_DETECTION:
+        logging.info(f"Motion threshold: {MOTION_THRESHOLD}%, Min interval: {MIN_FRAME_INTERVAL}s")
     
     # Start metrics server in background
     metrics_thread = threading.Thread(target=start_metrics_server, daemon=True)
@@ -172,6 +263,10 @@ def main():
     frame_count = 0
     last_flush_time = time.time()
     
+    # Motion detection state (use lists to make mutable references)
+    prev_gray_ref = [None]
+    last_sent_ref = [0.0]
+    
     try:
         while True:
             start_time = time.time()
@@ -193,9 +288,33 @@ def main():
                 continue
                 
             frame_count += 1
-            frames_processed.labels(service=SERVICE_NAME).inc()
             
             try:
+                # Check if frame should be sent based on motion detection
+                should_send, motion_score_value, current_gray = should_send_frame(
+                    latest_message.value, prev_gray_ref, last_sent_ref
+                )
+                
+                # Update motion score metric
+                if ENABLE_MOTION_DETECTION:
+                    motion_score.labels(service=SERVICE_NAME).set(motion_score_value)
+                
+                # Skip frame if no significant motion detected
+                if not should_send:
+                    frames_skipped.labels(service=SERVICE_NAME).inc()
+                    consumer.commit()  # Still commit to advance offset
+                    
+                    if frame_count % 100 == 0:
+                        logging.info(f"Skipped frame {frame_count} (motion: {motion_score_value:.2f}%)")
+                    continue
+                
+                # Update motion detection state
+                if current_gray is not None:
+                    prev_gray_ref[0] = current_gray
+                    last_sent_ref[0] = time.time()
+                
+                frames_processed.labels(service=SERVICE_NAME).inc()
+                
                 # Choose processing mode based on ENABLE_CLAHE flag
                 if ENABLE_CLAHE:
                     # Apply CLAHE preprocessing for better quality in varying lighting
@@ -237,7 +356,8 @@ def main():
                 
                 if frame_count % 30 == 0:
                     mode = "CLAHE preprocessing" if ENABLE_CLAHE else "passthrough"
-                    logging.info(f"Forwarded frame {frame_count} ({mode}), offset: {latest_message.offset}, latency: {latency_ms:.2f}ms")
+                    motion_info = f", motion: {motion_score_value:.2f}%" if ENABLE_MOTION_DETECTION else ""
+                    logging.info(f"Forwarded frame {frame_count} ({mode}), offset: {latest_message.offset}, latency: {latency_ms:.2f}ms{motion_info}")
                     
             except Exception as process_error:
                 # Send failed message to DLQ with error metadata
