@@ -14,17 +14,17 @@ RUN apt-get update && \
 WORKDIR /app
 
 # Copy common utilities first
-COPY ../common/__init__.py /app/common/
-COPY ../common/health.py /app/common/
-COPY ../common/gpu_utils.py /app/common/
+COPY common/__init__.py /app/common/
+COPY common/health.py /app/common/
+COPY common/gpu_utils.py /app/common/
 
-COPY pip_wheels/ /wheels/
-COPY requirements.txt .
+COPY model/pip_wheels/ /wheels/
+COPY model/requirements.txt .
 
 
 RUN pip install --no-cache-dir --find-links=/wheels --no-index -r requirements.txt
 
-COPY yolo11n.pt .
-COPY model_inference.py .
+COPY model/yolo11n.pt .
+COPY model/model_inference.py .
 
 CMD ["python", "model_inference.py"]

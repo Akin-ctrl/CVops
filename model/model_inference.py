@@ -1,3 +1,41 @@
+"""
+model_inference.py - YOLOv11 Object Detection Inference Service
+================================================================
+Consumes preprocessed frames from Kafka, runs YOLO inference, and publishes results.
+
+Features:
+- YOLOv11 object detection with GPU acceleration
+- Real-time frame processing with aggressive catch-up
+- Dual output: annotated frames + JSON detection data
+- Object tracking support (optional, slower)
+- GPU metrics and health monitoring
+- Dead Letter Queue (DLQ) for failed frames
+- Prometheus metrics for inference performance
+- Background frame grabber for low-latency processing
+
+Processing Pipeline:
+    1. Background thread continuously grabs latest frame (skip old frames)
+    2. Decode JPEG to numpy array
+    3. Run YOLO inference (detect/track objects)
+    4. Publish annotated frame to visual topic
+    5. Publish JSON detections to data topic
+    6. Manual commit offset after success
+
+Environment Variables:
+    KAFKA_BROKER: Kafka bootstrap server
+    KAFKA_INPUT_TOPIC: Topic to consume frames from
+    KAFKA_VISUAL_TOPIC: Topic for annotated frames
+    KAFKA_DATA_TOPIC: Topic for JSON detection data
+    KAFKA_DLQ_TOPIC: Dead letter queue for errors
+    CONSUMER_GROUP_ID: Consumer group ID
+    MODEL_WEIGHTS_PATH: Path to YOLO weights file
+    DEVICE: Inference device (cpu/cuda/cuda:0)
+    METRICS_PORT: Port for health/metrics HTTP server
+    USE_TRACKING: Enable object tracking (true/false)
+    INPUT_SIZE: YOLO input size (smaller = faster)
+    CAMERA_ID: Camera identifier for JSON metadata
+"""
+
 import cv2
 import numpy as np
 from kafka import KafkaConsumer, KafkaProducer
@@ -6,6 +44,7 @@ import os
 import sys
 import json
 import time
+from typing import Optional, Dict, Any, Tuple, List
 from ultralytics import YOLO
 from dotenv import load_dotenv
 import threading
@@ -22,24 +61,30 @@ from common.gpu_utils import (
 
 load_dotenv()
 
-# --- Configuration ---
-logging.basicConfig(level=logging.INFO,
-                    format='%(asctime)s - %(levelname)s - %(message)s')
+# Configure logging
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 
-KAFKA_BROKER = os.getenv("KAFKA_BROKER", "kafka:9092")
-KAFKA_INPUT_TOPIC = os.getenv("KAFKA_INPUT_TOPIC", "yolo-input-frames")
-KAFKA_VISUAL_TOPIC = os.getenv("KAFKA_VISUAL_TOPIC", "yolo-visual-output")
-KAFKA_DATA_TOPIC = os.getenv("KAFKA_DATA_TOPIC", "yolo-data-output")
-KAFKA_DLQ_TOPIC = os.getenv("KAFKA_DLQ_TOPIC", "dlq-inference-errors")
+# Kafka configuration
+KAFKA_BROKER: str = os.getenv("KAFKA_BROKER", "kafka:9092")
+KAFKA_INPUT_TOPIC: str = os.getenv("KAFKA_INPUT_TOPIC", "yolo-input-frames")
+KAFKA_VISUAL_TOPIC: str = os.getenv("KAFKA_VISUAL_TOPIC", "yolo-visual-output")
+KAFKA_DATA_TOPIC: str = os.getenv("KAFKA_DATA_TOPIC", "yolo-data-output")
+KAFKA_DLQ_TOPIC: str = os.getenv("KAFKA_DLQ_TOPIC", "dlq-inference-errors")
+CONSUMER_GROUP_ID: str = os.getenv("CONSUMER_GROUP_ID", "yolo-inference-group")
 
-CONSUMER_GROUP_ID = os.getenv("CONSUMER_GROUP_ID", "yolo-inference-group")
-MODEL_WEIGHTS_PATH = os.getenv("MODEL_WEIGHTS_PATH", "yolo11n.pt")
-DEVICE = os.getenv("DEVICE", "cpu")
-METRICS_PORT = int(os.getenv("METRICS_PORT", "8002"))
+# Model configuration
+MODEL_WEIGHTS_PATH: str = os.getenv("MODEL_WEIGHTS_PATH", "yolo11n.pt")
+DEVICE: str = os.getenv("DEVICE", "cpu")
+METRICS_PORT: int = int(os.getenv("METRICS_PORT", "8002"))
 
 # Performance tuning
-USE_TRACKING = os.getenv("USE_TRACKING", "false").lower() == "true"  # Tracking is slower
-INPUT_SIZE = int(os.getenv("INPUT_SIZE", "320"))  # Smaller = faster (320 is very fast)
+USE_TRACKING: bool = os.getenv("USE_TRACKING", "false").lower() == "true"
+INPUT_SIZE: int = int(os.getenv("INPUT_SIZE", "320"))
+CAMERA_ID: str = os.getenv("CAMERA_ID", "esp32-cam-01")
 
 # Prometheus metrics
 frames_processed = Counter('corvision_frames_processed_total', 'Total frames processed', ['service'])
@@ -60,11 +105,12 @@ gpu_memory_used = Gauge('corvision_gpu_memory_used_mb', 'GPU memory used in MB',
 gpu_memory_total = Gauge('corvision_gpu_memory_total_mb', 'GPU memory total in MB', ['service', 'gpu_id'])
 gpu_temperature = Gauge('corvision_gpu_temperature_celsius', 'GPU temperature in Celsius', ['service', 'gpu_id'])
 inference_speedup = Gauge('corvision_inference_speedup_factor', 'Inference speedup vs CPU', ['service'])
+kafka_consumer_lag = Gauge('corvision_kafka_consumer_lag', 'Consumer lag (messages behind)', ['service', 'topic', 'partition'])
 
-SERVICE_NAME = 'yolo-inference'
+SERVICE_NAME: str = 'yolo-inference'
 
 # Global state for health checks
-health_state = {
+health_state: Dict[str, Any] = {
     'kafka_consumer_connected': False,
     'kafka_producer_connected': False,
     'model_loaded': False,
@@ -73,16 +119,41 @@ health_state = {
     'device_type': 'unknown'
 }
 
-def start_metrics_server():
-    """Start HTTP server with health, readiness, and metrics endpoints."""
+
+def start_metrics_server() -> None:
+    """
+    Start HTTP server with health, readiness, and metrics endpoints.
+    
+    Runs in background thread to expose Prometheus metrics and health status.
+    Sets service_up metric to 0 on failure.
+    """
     try:
         start_health_server(METRICS_PORT, SERVICE_NAME, health_state)
     except Exception as e:
         logging.error(f"Failed to start HTTP server: {e}")
         service_up.labels(service=SERVICE_NAME).set(0)
 
-# --- Kafka Helpers ---
-def create_kafka_consumer(kafka_broker, topic, group_id):
+
+def create_kafka_consumer(kafka_broker: str, topic: str, group_id: str) -> Optional[KafkaConsumer]:
+    """
+    Create a Kafka consumer with optimized settings for frame streaming.
+    
+    Args:
+        kafka_broker: Kafka bootstrap server address.
+        topic: Topic name to subscribe to.
+        group_id: Consumer group ID.
+    
+    Returns:
+        Connected KafkaConsumer instance, or None if connection fails.
+    
+    Side Effects:
+        Updates health_state['kafka_consumer_connected'] flag.
+    
+    Notes:
+        - Manual commits for at-least-once semantics
+        - Optimized fetch sizes for large frames (1MB max)
+        - Messages are raw bytes (JPEG encoded)
+    """
     try:
         consumer = KafkaConsumer(
             topic,
@@ -90,10 +161,10 @@ def create_kafka_consumer(kafka_broker, topic, group_id):
             group_id=group_id,
             api_version=(0, 10, 1),
             auto_offset_reset='latest',
-            enable_auto_commit=False,  # Manual commits for reliability
-            fetch_max_bytes=1048576,  # 1MB max fetch
-            max_partition_fetch_bytes=524288,  # 512KB per partition
-            value_deserializer=lambda m: m  # raw bytes
+            enable_auto_commit=False,
+            fetch_max_bytes=1048576,
+            max_partition_fetch_bytes=524288,
+            value_deserializer=lambda m: m
         )
         health_state['kafka_consumer_connected'] = True
         logging.info(f"Consumer connected to {topic} (manual commits)")
@@ -103,7 +174,24 @@ def create_kafka_consumer(kafka_broker, topic, group_id):
         logging.error(f"Error creating consumer: {e}")
         return None
 
-def create_kafka_producer(kafka_broker):
+
+def create_kafka_producer(kafka_broker: str) -> Optional[KafkaProducer]:
+    """
+    Create a Kafka producer with LZ4 compression.
+    
+    Args:
+        kafka_broker: Kafka bootstrap server address.
+    
+    Returns:
+        Connected KafkaProducer instance, or None if connection fails.
+    
+    Side Effects:
+        Updates health_state['kafka_producer_connected'] flag.
+    
+    Notes:
+        - LZ4 compression for efficient bandwidth usage
+        - Used for both visual and data outputs
+    """
     try:
         producer = KafkaProducer(
             bootstrap_servers=[kafka_broker],
@@ -118,45 +206,140 @@ def create_kafka_producer(kafka_broker):
         logging.error(f"Error creating producer: {e}")
         return None
 
-# --- Frame Consumer Thread ---
+
 class FrameGrabber(threading.Thread):
-    """Background thread that continuously grabs the latest frame."""
-    def __init__(self, consumer):
+    """
+    Background thread that continuously grabs the latest frame from Kafka.
+    
+    Aggressively polls for new frames and keeps only the most recent one,
+    discarding older frames to minimize latency and allow inference to catch up.
+    
+    Attributes:
+        consumer: KafkaConsumer instance to poll from.
+        latest_frame: Most recent frame bytes (JPEG encoded).
+        latest_offset: Kafka offset of latest frame.
+        lock: Threading lock for safe concurrent access.
+        running: Thread control flag.
+    
+    Notes:
+        - Runs as daemon thread (auto-terminates on process exit)
+        - Polls with 10ms timeout for low latency
+        - Processes up to 500 records per poll batch
+        - Tracks consumer lag per partition
+        - Thread-safe access to latest frame via lock
+    """
+    
+    def __init__(self, consumer: KafkaConsumer) -> None:
+        """
+        Initialize frame grabber thread.
+        
+        Args:
+            consumer: Connected Kafka consumer instance.
+        """
         super().__init__(daemon=True)
         self.consumer = consumer
-        self.latest_frame = None
-        self.latest_offset = 0
+        self.latest_frame: Optional[bytes] = None
+        self.latest_offset: int = 0
         self.lock = threading.Lock()
-        self.running = True
+        self.running: bool = True
         
-    def run(self):
+    def run(self) -> None:
+        """
+        Main thread loop - continuously poll and update latest frame.
+        
+        Polls Kafka at high frequency and retains only the newest frame,
+        allowing inference to skip old frames when it's behind.
+        """
         while self.running:
             try:
                 # Aggressively poll and keep only the latest frame
                 records = self.consumer.poll(timeout_ms=10, max_records=500)
                 if records:
-                    for partition_records in records.values():
+                    for topic_partition, partition_records in records.items():
                         if partition_records:
                             latest = partition_records[-1]
                             with self.lock:
                                 self.latest_frame = latest.value
                                 self.latest_offset = latest.offset
+                            
+                            # Track consumer lag
+                            try:
+                                end_offsets = self.consumer.end_offsets([topic_partition])
+                                high_water_mark = end_offsets[topic_partition]
+                                lag = high_water_mark - latest.offset - 1
+                                kafka_consumer_lag.labels(
+                                    service=SERVICE_NAME,
+                                    topic=topic_partition.topic,
+                                    partition=str(topic_partition.partition)
+                                ).set(max(0, lag))
+                            except Exception as lag_error:
+                                logging.debug(f"Failed to calculate lag: {lag_error}")
             except Exception as e:
                 logging.error(f"Frame grabber error: {e}")
                 time.sleep(0.1)
     
-    def get_latest(self):
+    def get_latest(self) -> Tuple[Optional[bytes], int]:
+        """
+        Get latest frame without clearing.
+        
+        Returns:
+            Tuple of (frame_bytes, offset). frame_bytes is None if no frame available.
+        
+        Notes:
+            - Thread-safe via lock
+            - Does not clear frame (clearing happens after commit)
+        """
         with self.lock:
-            frame = self.latest_frame
-            offset = self.latest_offset
-            self.latest_frame = None  # Clear after reading
-        return frame, offset
+            return self.latest_frame, self.latest_offset
     
-    def stop(self):
+    def clear_frame(self) -> None:
+        """
+        Clear frame after successful commit.
+        
+        Prevents reprocessing the same frame after it's been committed.
+        """
+        with self.lock:
+            self.latest_frame = None
+    
+    def stop(self) -> None:
+        """Signal thread to stop running."""
         self.running = False
 
-# --- Main Logic ---
-def main():
+
+def main() -> None:
+    """
+    Main inference loop - consume frames, run YOLO, publish results.
+    
+    Workflow:
+        1. Start metrics server in background
+        2. Auto-select best device (GPU if available)
+        3. Load and warm up YOLO model
+        4. Connect Kafka consumer and producer
+        5. Start background frame grabber thread
+        6. Start GPU metrics updater (if GPU available)
+        7. Loop:
+           a. Get latest frame from grabber
+           b. Decode JPEG to numpy array
+           c. Run YOLO inference (detect or track)
+           d. Publish annotated frame to visual topic
+           e. Publish JSON detections to data topic
+           f. Manual commit offset
+           g. Clear frame from grabber
+           h. Update metrics
+        8. Send failed frames to DLQ
+        9. Clean up resources on exit
+    
+    Performance Optimizations:
+        - Background thread skips old frames (aggressive catch-up)
+        - Half-precision inference on GPU (2x faster)
+        - Configurable input size (smaller = faster)
+        - Lower JPEG quality for visual output (faster encoding)
+        - LZ4 compression for Kafka messages
+    
+    Exit Conditions:
+        - KeyboardInterrupt (Ctrl+C)
+        - Fatal connection or model loading failures
+    """
     logging.info(f"Starting YOLO Inference on {DEVICE}...")
     logging.info(f"Tracking: {USE_TRACKING}, Input Size: {INPUT_SIZE}")
     
@@ -168,25 +351,28 @@ def main():
     log_device_info()
     
     # Auto-select best device (GPU if available, CPU fallback)
-    selected_device = select_best_device(DEVICE)
+    selected_device: str = select_best_device(DEVICE)
     logging.info(f"Selected device: {selected_device}")
     
     # Update health state with device info
-    gpu_info = get_gpu_info()
+    gpu_info: Dict[str, Any] = get_gpu_info()
     health_state['gpu_available'] = gpu_info['cuda_available']
     health_state['device_type'] = 'gpu' if 'cuda' in selected_device else 'cpu'
     
     # Set GPU availability metric
     gpu_available.labels(service=SERVICE_NAME).set(1 if gpu_info['cuda_available'] else 0)
 
+    # Initialize Kafka connections
     consumer = create_kafka_consumer(KAFKA_BROKER, KAFKA_INPUT_TOPIC, CONSUMER_GROUP_ID)
     producer = create_kafka_producer(KAFKA_BROKER)
     
+    # Load and warm up YOLO model
     try:
         model = YOLO(MODEL_WEIGHTS_PATH)
         model.to(selected_device)
         health_state['model_loaded'] = True
-        # Warmup the model
+        
+        # Warm up model with dummy inference
         logging.info("Warming up model...")
         dummy = np.zeros((INPUT_SIZE, INPUT_SIZE, 3), dtype=np.uint8)
         model.predict(dummy, imgsz=INPUT_SIZE, verbose=False)
@@ -204,24 +390,22 @@ def main():
 
     service_up.labels(service=SERVICE_NAME).set(1)
     
-    # Start background frame grabber
+    # Start background frame grabber thread
     grabber = FrameGrabber(consumer)
     grabber.start()
 
-    # Pre-compile JPEG encoding params
-    encode_params = [cv2.IMWRITE_JPEG_QUALITY, 60]  # Lower quality = faster
-    frame_count = 0
-    last_log_time = time.time()
-    last_offset = 0
-    
-    # Track baseline CPU performance for speedup calculation
-    cpu_baseline_latency = None
+    # Processing state variables
+    encode_params: List[int] = [cv2.IMWRITE_JPEG_QUALITY, 60]
+    frame_count: int = 0
+    last_log_time: float = time.time()
+    last_offset: int = 0
     
     try:
         logging.info("Processing frames...")
         
-        # Background stats updater for GPU metrics
-        def update_gpu_stats():
+        # Background GPU stats updater
+        def update_gpu_stats() -> None:
+            """Periodically update GPU metrics (runs in background thread)."""
             while True:
                 if health_state['gpu_available']:
                     stats = get_gpu_stats()
@@ -232,24 +416,25 @@ def main():
                             gpu_memory_used.labels(service=SERVICE_NAME, gpu_id=gpu_id).set(gpu['memory_used_mb'])
                             gpu_memory_total.labels(service=SERVICE_NAME, gpu_id=gpu_id).set(gpu['memory_total_mb'])
                             gpu_temperature.labels(service=SERVICE_NAME, gpu_id=gpu_id).set(gpu['temperature_c'])
-                time.sleep(5)  # Update every 5 seconds
+                time.sleep(5)
         
         if health_state['gpu_available']:
             gpu_stats_thread = threading.Thread(target=update_gpu_stats, daemon=True)
             gpu_stats_thread.start()
         while True:
-            loop_start = time.time()
+            loop_start: float = time.time()
             
             # Get the absolute latest frame (skip all old ones)
             frame_bytes, offset = grabber.get_latest()
             
             if frame_bytes is None:
-                time.sleep(0.001)  # Brief sleep if no frame
+                time.sleep(0.001)
                 continue
 
             messages_consumed.labels(service=SERVICE_NAME, topic=KAFKA_INPUT_TOPIC).inc()
             
             try:
+                # Decode JPEG bytes to numpy array
                 nparr = np.frombuffer(frame_bytes, np.uint8)
                 frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
                 if frame is None:
@@ -261,7 +446,7 @@ def main():
                 health_state['processing_frames'] = True
                 last_offset = offset
 
-                # --- Inference with optimized settings ---
+                # Run YOLO inference
                 if USE_TRACKING:
                     results = model.track(
                         source=frame, 
@@ -295,8 +480,8 @@ def main():
                 producer.send(KAFKA_VISUAL_TOPIC, buffer.tobytes())
                 messages_produced.labels(service=SERVICE_NAME, topic=KAFKA_VISUAL_TOPIC).inc()
 
-                # --- JSON Data Output (optimized) ---
-                detection_list = []
+                # Extract detection data
+                detection_list: List[Dict[str, Any]] = []
                 if result.boxes and len(result.boxes):
                     boxes = result.boxes.xyxy.cpu().numpy()
                     classes = result.boxes.cls.cpu().numpy()
@@ -316,16 +501,23 @@ def main():
                         detections_total.labels(class_name=class_name).inc()
                         detection_confidence.labels(class_name=class_name).observe(float(conf))
 
-                json_payload = {
+                # Create JSON payload with metadata
+                json_payload: Dict[str, Any] = {
                     "timestamp": time.time(),
-                    "camera_id": "esp32-cam-01",
+                    "camera_id": CAMERA_ID,
                     "detections": detection_list
                 }
                 producer.send(KAFKA_DATA_TOPIC, json.dumps(json_payload).encode('utf-8'))
                 messages_produced.labels(service=SERVICE_NAME, topic=KAFKA_DATA_TOPIC).inc()
                 
+                # Flush producer to ensure messages are sent
+                producer.flush()
+                
                 # Manual commit after successful processing
                 consumer.commit()
+                
+                # Clear processed frame from grabber (prevents reprocessing)
+                grabber.clear_frame()
                 
                 # Update latency metric
                 latency_ms = (time.time() - loop_start) * 1000
@@ -337,7 +529,7 @@ def main():
                 errors_total.labels(service=SERVICE_NAME, error_type=type(process_error).__name__).inc()
                 
                 try:
-                    dlq_message = {
+                    dlq_message: Dict[str, Any] = {
                         'error': str(process_error),
                         'error_type': type(process_error).__name__,
                         'offset': offset,
@@ -359,20 +551,29 @@ def main():
                 last_log_time = time.time()
 
     except KeyboardInterrupt:
-        logging.info("Stopping...")
+        logging.info("Inference service stopped by user")
     except Exception as e:
         logging.error(f"Error in main loop: {e}")
         errors_total.labels(service=SERVICE_NAME, error_type=type(e).__name__).inc()
     finally:
+        # Clean up resources
         service_up.labels(service=SERVICE_NAME).set(0)
         health_state['kafka_consumer_connected'] = False
         health_state['kafka_producer_connected'] = False
         health_state['model_loaded'] = False
         health_state['processing_frames'] = False
+        
+        # Stop grabber first to prevent new polls
         grabber.stop()
-        consumer.close()
-        producer.close()
-        logging.info("Cleanup complete")
+        time.sleep(0.2)
+        
+        # Close Kafka connections
+        if consumer:
+            consumer.close()
+        if producer:
+            producer.close()
+        
+        logging.info("Inference service cleanup complete")
 
 if __name__ == "__main__":
     main()
