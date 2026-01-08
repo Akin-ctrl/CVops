@@ -6,8 +6,8 @@ services:
  # -------------------------------------------------------
   kafka-producer: 
     build: 
-      context: ./kafka-producers 
-      dockerfile: Dockerfile.producer
+      context: .
+      dockerfile: kafka-producers/Dockerfile.producer
     container_name: kafka_producer
     network_mode: host
     depends_on:
@@ -89,8 +89,8 @@ services:
 
   kafka-preprocessor:
     build: 
-      context: ./kafka-consumer 
-      dockerfile: Dockerfile.consumer
+      context: .
+      dockerfile: kafka-consumer/Dockerfile.consumer
     depends_on:
       kafka:
         condition: service_healthy
@@ -124,8 +124,8 @@ services:
  # -------------------------------------------------------
   kafka-viewer: 
     build: 
-      context: ./view-process
-      dockerfile: Dockerfile.viewer
+      context: .
+      dockerfile: view-process/Dockerfile.viewer
     depends_on:
       kafka:
         condition: service_healthy
@@ -143,10 +143,10 @@ services:
       timeout: 10s
       retries: 3
     restart: unless-stopped
-  detector-viewer: 
-    build: 
-      context: ./view-detection
-      dockerfile: Dockerfile.viewer-d
+  detector-viewer:
+    build:
+      context: .
+      dockerfile: view-detection/Dockerfile.viewer-d
     depends_on:
       kafka:
         condition: service_healthy
@@ -167,8 +167,8 @@ services:
 
   yolo-inference:
     build: 
-      context: ./model
-      dockerfile: Dockerfile.model
+      context: .
+      dockerfile: model/Dockerfile.model
     depends_on:
       kafka:
         condition: service_healthy
@@ -183,6 +183,7 @@ services:
       DEVICE: "auto"  # Auto-detect GPU, fallback to CPU
       USE_TRACKING: "false"  # Detection only - much faster
       INPUT_SIZE: "416"      # Match preprocessor output: 416x416 for CPU optimization
+      CAMERA_ID: ${CAMERA_ID}  # Camera identifier for multi-camera deployments
       METRICS_PORT: 8002
     ports:
       - "8002:8002"
@@ -207,8 +208,8 @@ services:
   # DATA STORAGE AND MANAGEMENT 
   minio-writer:
     build:
-      context: ./minio
-      dockerfile: Dockerfile.minio-writer
+      context: .
+      dockerfile: minio/Dockerfile.minio-writer
     depends_on:
       kafka:
         condition: service_healthy

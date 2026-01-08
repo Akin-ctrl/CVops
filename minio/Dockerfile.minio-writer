@@ -8,9 +8,13 @@ RUN apt-get update && \
     
 WORKDIR /app
 
-COPY requirements.txt .
+# Copy common utilities
+COPY common/__init__.py /app/common/
+COPY common/health.py /app/common/
+
+COPY minio/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY minio-writer.py .
+COPY minio/minio-writer.py .
 
 CMD ["python", "minio-writer.py"]

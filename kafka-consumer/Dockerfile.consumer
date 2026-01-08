@@ -9,12 +9,17 @@ RUN apt-get update && \
 # Set the working directory inside the container
 WORKDIR /app
 
+# Copy common utilities
+COPY common/__init__.py /app/common/
+COPY common/health.py /app/common/
+
 # Copy the requirements file and install dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY kafka-consumer/pip_wheels/ /wheels/
+COPY kafka-consumer/requirements.txt .
+RUN pip install --no-cache-dir --find-links=/wheels --no-index -r requirements.txt
 
 # Copy the application code
-COPY preprocessor.py .
+COPY kafka-consumer/preprocessor.py .
 
 # Command to run the application
 CMD ["python", "preprocessor.py"]
