@@ -1,14 +1,6 @@
 # CVops-OilGas V2: AI-Powered Safety Monitoring System
 ## Project Proposal Document
 
-**Project Name:** CVops-OilGas V2  
-**Project Type:** Safety-Critical Industrial Monitoring System  
-**Prepared By:** AI Systems Engineering Team  
-**Date:** December 17, 2025  
-**Version:** 1.0  
-**Classification:** Internal - Strategic Initiative
-
----
 
 ## Executive Summary
 
@@ -37,15 +29,9 @@ Deploy an AI-powered, multi-modal camera system with real-time detection capabil
 - **Safety improvement:** 85% reduction in undetected safety incidents
 - **Response time:** Detection to alert in <2 seconds (vs. 5-15 minutes manual detection)
 - **Compliance:** 100% audit trail coverage for regulatory requirements
-- **Cost avoidance:** Prevent 3-5 major incidents annually (estimated $10-15M savings)
 - **Insurance benefits:** Potential 15-20% premium reduction with documented safety systems
 - **Operational efficiency:** Reduce safety inspection personnel by 40% while improving coverage
 
-### Investment Summary
-- **Total Budget:** $385,000 (Year 1 implementation + operations)
-- **Timeline:** 9 weeks development, 2 weeks deployment, 4 weeks validation
-- **ROI:** Break-even in 8 months based on incident prevention and insurance savings
-- **Ongoing Costs:** $48,000/year (maintenance, cloud storage, model updates)
 
 ### Strategic Alignment
 This project aligns with corporate objectives:
@@ -70,7 +56,7 @@ This project aligns with corporate objectives:
 - Incident response time: 5-15 minutes from occurrence to detection
 
 **Pain Points:**
-1. **Coverage gaps:** Safety officers can only inspect 20-30% of facility per patrol
+1. **Coverage gaps:** Safety officers can only inspect ~ 20-30% of facility per patrol
 2. **Human factors:** Fatigue, distraction, and visual limitations reduce detection effectiveness
 3. **Delayed response:** Critical seconds/minutes lost in incident detection
 4. **Incomplete records:** Manual logs lack timestamps, visual evidence, and continuous monitoring
@@ -104,57 +90,7 @@ This project aligns with corporate objectives:
 - Customizable to facility-specific hazards
 - Integration with existing SCADA and emergency systems
 
-### 1.3 Financial Analysis
-
-**Implementation Costs (Year 1):**
-| Category | Cost | Notes |
-|----------|------|-------|
-| Hardware (cameras, servers, GPU) | $85,000 | 9 cameras (3 per type), edge server, backup |
-| Software development | $180,000 | 9 weeks @ 2 engineers + 1 ML specialist |
-| AI model training/licensing | $35,000 | Cloud GPU compute + dataset acquisition |
-| Infrastructure (network, power) | $25,000 | Fiber runs, PoE switches, UPS systems |
-| Integration (SCADA, notification) | $20,000 | API development, testing |
-| Deployment & testing | $15,000 | Installation, calibration, validation |
-| Training & documentation | $10,000 | Staff training, SOPs, runbooks |
-| Contingency (15%) | $15,000 | Risk buffer |
-| **Total Year 1** | **$385,000** | |
-
-**Operating Costs (Annual, Years 2+):**
-| Category | Annual Cost | Notes |
-|----------|-------------|-------|
-| Cloud storage (compliance logs) | $12,000 | 2TB/month retention @ $0.50/GB |
-| Maintenance & support | $18,000 | 1 engineer @ 20% FTE |
-| Model retraining/updates | $8,000 | Quarterly model improvements |
-| Hardware refresh reserve | $6,000 | 5-year replacement cycle |
-| Monitoring & alerts (Twilio, etc.) | $4,000 | SMS/email notification services |
-| **Total Annual** | **$48,000** | |
-
-**Cost Savings & Benefits (Annual):**
-| Benefit | Annual Value | Basis |
-|---------|--------------|-------|
-| Incident prevention (fire) | $720,000 | 4 fires avoided @ $180K each |
-| Incident prevention (leaks) | $350,000 | 2 major leaks avoided @ $175K each |
-| Injury cost avoidance | $120,000 | 3 injuries avoided @ $40K each |
-| Safety officer optimization | $180,000 | 2 FTE reduction @ $90K loaded cost |
-| Insurance premium reduction | $65,000 | 15% reduction on $430K annual premium |
-| External audit elimination | $60,000 | In-house thermal/gas monitoring |
-| OSHA fine avoidance | $45,000 | Compliance demonstration |
-| Downtime reduction | $200,000 | 50% reduction in incident-related downtime |
-| **Total Annual Benefits** | **$1,740,000** | |
-
-**ROI Calculation:**
-- **Net Annual Benefit:** $1,740,000 - $48,000 = $1,692,000
-- **Payback Period:** $385,000 / $1,692,000 = 0.23 years (2.7 months)
-- **3-Year NPV (8% discount):** $3.98M
-- **IRR:** 439%
-
-**Risk-Adjusted ROI (Conservative):**
-Assuming 60% effectiveness (vs. 100% prevention):
-- **Net Annual Benefit:** ($1,740,000 × 0.6) - $48,000 = $996,000
-- **Payback Period:** 4.6 months
-- **3-Year NPV:** $2.18M
-
-### 1.4 Strategic Justification
+### 1.3 Strategic Justification
 
 **Beyond Financial ROI:**
 1. **Employee Safety:** Moral and ethical obligation to protect workers
