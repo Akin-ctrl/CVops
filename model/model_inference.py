@@ -4,7 +4,7 @@ model_inference.py - YOLOv11 Object Detection Inference Service
 Consumes preprocessed frames from Kafka, runs YOLO inference, and publishes results.
 
 Features:
-- YOLOv11 object detection with GPU acceleration
+- YOLOv11 object detection with GPU acceleration (if available)
 - Real-time frame processing with aggressive catch-up
 - Dual output: annotated frames + JSON detection data
 - Object tracking support (optional, slower)
