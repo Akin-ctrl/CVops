@@ -1,8 +1,8 @@
-# CoRVision Observability Guide
+# CVops Observability Guide
 
 ## Overview
 
-CoRVision now includes comprehensive observability with **Prometheus** for metrics collection and **Grafana** for visualization. This allows real-time monitoring of the entire pipeline from ingestion to storage.
+CVops includes comprehensive observability with **Prometheus** for metrics collection and **Grafana** for visualization. This allows real-time monitoring of the entire pipeline from ingestion to storage.
 
 ---
 
@@ -38,21 +38,19 @@ docker compose ps prometheus grafana
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │                     CoRVision Services                       │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐     │
-│  │ Producer │  │Preprocess│  │   YOLO   │  │  MinIO   │     │
-│  │  :8000   │  │  :8001   │  │  :8002   │  │ Writer   │     │
-│  │          │  │          │  │          │  │  :8003   │     │
-│  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘     │
-│       │             │             │             │           │
-│       └─────────────┴─────────────┴─────────────┘           │
-│                         │                                    │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐      │
+│  │ Producer │  │Preprocess│  │   YOLO   │  │  MinIO   │      │
+│  │  :8000   │  │  :8001   │  │  :8002   │  │ Writer   │      │
+│  │          │  │          │  │          │  │  :8003   │      │
+│  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘      │
+│       │             │             │             │            │
+│       └─────────────┴─────────────┴─────────────┘            │
 │                         │ Metrics (HTTP)                     │
 │                         ▼                                    │
 │              ┌─────────────────────┐                         │
 │              │    Prometheus       │                         │
 │              │      :9090          │                         │
 │              └──────────┬──────────┘                         │
-│                         │                                    │
 │                         │ PromQL                             │
 │                         ▼                                    │
 │              ┌─────────────────────┐                         │
@@ -318,7 +316,7 @@ Configure alerts for:
 
 - Check dashboard weekly
 - Analyze trends (FPS degradation, detection patterns)
-- Optimize based on metrics (adjust batch sizes, buffer limits)
+- Optimize based on metrics (batch sizes, buffer limits)
 
 ### 4. Retention Policy
 
@@ -377,3 +375,4 @@ custom_metric.labels(label='value').inc()
 - [Grafana Documentation](https://grafana.com/docs/)
 - [PromQL Cheat Sheet](https://promlabs.com/promql-cheat-sheet/)
 - [Prometheus Best Practices](https://prometheus.io/docs/practices/naming/)
+

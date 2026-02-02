@@ -9,268 +9,35 @@ A **distributed, real-time computer vision pipeline** designed for edge-to-cloud
 
 ---
 
+## Sandbox Station (Submission)
+
+This repository serves as a sandbox station baseline for **Edge AI Vision** exploration. Attendees can tune inference parameters, sampling strategies, and preprocessing to explore real-time performance/accuracy trade-offs on edge hardware.
+
+- **Station Overview**: [SANDBOX_STATION.md](SANDBOX_STATION.md)
+- **Decision Log**: [sandbox/LEDGER.md](sandbox/LEDGER.md)
+
+---
+
+## Documentation
+
+- **[System Architecture](doc/architecture/README.md)** - Complete architecture overview, components, and data flow
+- **[Quick Start Guide](doc/guides/OBSERVABILITY_QUICKSTART.md)** - Get up and running in 5 minutes
+- **[GPU Setup](doc/guides/GPU_SETUP.md)** - Hardware acceleration configuration
+- **[Observability Guide](doc/guides/OBSERVABILITY.md)** - Prometheus and Grafana setup
+- **[Performance Tuning](doc/guides/PERFORMANCE_TUNING.md)** - CPU optimization strategies
+- **[V2 Proposals](doc/proposals/)** - Future enhancement plans
+
+---
+
 ## Table of Contents
 
-- [Architecture Overview](#architecture-overview)
-- [Data Flow](#data-flow)
-- [Components](#components)
-  - [Kafka Producer](#1-kafka-producer)
-  - [Preprocessor](#2-preprocessor)
-  - [YOLO Inference](#3-yolo-inference)
-  - [MinIO Writer](#4-minio-writer)
-  - [Web Viewers](#5-web-viewers)
-- [Infrastructure](#infrastructure)
-- [Kafka Topics](#kafka-topics)
-- [Technology Stack](#technology-stack)
 - [Quick Start](#quick-start)
+- [Technology Stack](#technology-stack)
 - [Configuration](#configuration)
-- [Exposed Ports](#exposed-ports)
-- [Performance Optimizations](#performance-optimizations)
-- [Observability & Monitoring](#observability--monitoring)
-- [Recommended Improvements](#recommended-improvements)
-- [Use Cases](#use-cases)
-- [License](#license)
+- [Web Interfaces](#web-interfaces)
+- [Common Operations](#common-operations)
+- [Documentation](#documentation)
 
----
-
-## Architecture Overview
-
-```
-┌─────────────────┐
-│   ESP32-CAM     │  (Physical camera streaming via HTTP)
-│  (IoT Device)   │
-└────────┬────────┘
-         │ HTTP Stream
-         ▼
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                           DOCKER COMPOSE INFRASTRUCTURE                         │
-├─────────────────────────────────────────────────────────────────────────────────┤
-│                                                                                 │
-│  ┌─────────────────┐     ┌─────────────────┐                                    │
-│  │  kafka-producer │────▶│   Kafka Topic   │  "esp32-video"                     │
-│  │ (camera-stream) │     │  (Raw Frames)   │                                    │
-│  └─────────────────┘     └────────┬────────┘                                    │
-│                                   │                                             │
-│                                   ▼                                             │
-│                          ┌─────────────────┐     ┌─────────────────┐            │
-│                          │   preprocessor  │────▶│   Kafka Topic   │            │
-│                          │  (frame relay)  │     │ "yolo-input-frames"          │
-│                          └─────────────────┘     └────────┬────────┘            │
-│                                                           │                     │
-│                                    ┌──────────────────────┴──────────────┐      │
-│                                    ▼                                     │      │
-│  ┌───────────────────────────────────────────────────────────────────┐   │      │
-│  │                    yolo-inference                                  │   │      │
-│  │  (YOLO11n Model - Object Detection/Tracking)                      │   │      │
-│  └───────────────────────────┬───────────────────────────────────────┘   │      │
-│                              │                                           │      │
-│              ┌───────────────┴───────────────┐                           │      │
-│              ▼                               ▼                           │      │
-│  ┌─────────────────────┐         ┌─────────────────────┐                 │      │
-│  │ "yolo-visual-output"│         │ "yolo-data-output"  │                 │      │
-│  │  (Annotated JPEG)   │         │  (JSON Detections)  │                 │      │
-│  └──────────┬──────────┘         └──────────┬──────────┘                 │      │
-│             │                               │                            │      │
-│             ▼                               ▼                            │      │
-│  ┌─────────────────────┐         ┌─────────────────────┐                 │      │
-│  │  detector-viewer    │         │    minio-writer     │                 │      │
-│  │  (Flask Web UI)     │         │  (Batch Storage)    │                 │      │
-│  │   Port: 7000        │         └──────────┬──────────┘                 │      │
-│  └─────────────────────┘                    │                            │      │
-│                                             ▼                            │      │
-│                                  ┌─────────────────────┐                 │      │
-│                                  │       MinIO         │                 │      │
-│                                  │  (S3-Compatible)    │                 │      │
-│                                  │  API: 9000          │                 │      │
-│                                  │  Console: 9001      │                 │      │
-│                                  └─────────────────────┘                 │      │
-│                                                                          │      │
-│    ┌─────────────────┐◀──────────────────────────────────────────────────┘      │
-│    │   kafka-viewer  │  (consumes "yolo-input-frames")                          │
-│    │ (Flask Web UI)  │                                                          │
-│    │   Port: 5000    │                                                          │
-│    └─────────────────┘                                                          │
-│                                                                                 │
-│    ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐          │
-│    │    Zookeeper    │◀───▶│      Kafka      │◀───▶│     Kafdrop     │          │
-│    │   (Port 2181)   │     │  (9092, 29092)  │     │  (Port 19000)   │          │
-│    └─────────────────┘     └─────────────────┘     └─────────────────┘          │
-│                                                                                 │
-└─────────────────────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## Data Flow
-
-1. **Ingestion**: ESP32-CAM streams MJPEG video over HTTP
-2. **Capture**: Kafka producer captures frames at ~30 FPS and publishes to Kafka
-3. **Preprocessing**: Preprocessor consumes frames and forwards to YOLO input topic
-4. **Inference**: YOLO model performs object detection on each frame
-5. **Output**: 
-   - Annotated frames → `yolo-visual-output` → Web viewer (port 7000)
-   - Detection JSON → `yolo-data-output` → MinIO storage
-6. **Storage**: MinIO writer batches detections and stores as JSON files
-
----
-
-## Components
-
-### 1. Kafka Producer
-
-**Location**: `kafka-producers/camera-stream-1.py`
-
-| Aspect | Details |
-|--------|---------|
-| **Purpose** | Ingests video stream from ESP32-CAM and publishes frames to Kafka |
-| **Input** | HTTP MJPEG stream (e.g., `http://192.168.x.x:8080/stream`) |
-| **Output Topic** | `esp32-video` |
-| **Frame Rate** | ~30 FPS (33ms interval) |
-| **Encoding** | JPEG @ 80% quality |
-| **Dependencies** | `opencv-python`, `kafka-python`, `python-dotenv` |
-
----
-
-### 2. Preprocessor
-
-**Location**: `kafka-consumer/preprocessor.py`
-
-| Aspect | Details |
-|--------|---------|
-| **Purpose** | Consumes raw frames and forwards to YOLO inference |
-| **Input Topic** | `esp32-video` |
-| **Output Topic** | `yolo-input-frames` |
-| **Consumer Group** | `preprocessor-group` |
-| **Optimization** | Polls batches of 50, keeps only **latest frame** to prevent lag |
-
-**Available Preprocessing** (currently bypassed for performance):
-- CLAHE contrast enhancement
-- BGR → RGB conversion
-- Resize to 640×640
-- Normalize to [0,1] float32
-
----
-
-### 3. YOLO Inference
-
-**Location**: `model/model_inference.py`
-
-| Aspect | Details |
-|--------|---------|
-| **Purpose** | Real-time object detection using YOLOv11 nano model |
-| **Model** | `yolo11n.pt` (Ultralytics YOLO11 Nano) |
-| **Input Topic** | `yolo-input-frames` |
-| **Output Topics** | `yolo-visual-output` (annotated JPEGs), `yolo-data-output` (JSON) |
-| **Device** | CPU (configurable for GPU) |
-| **Input Size** | 320×320 (configurable) |
-| **Features** | Optional tracking, background frame grabber, LZ4 compression |
-
-**JSON Detection Output Format:**
-```json
-{
-  "timestamp": 1701799200.123,
-  "camera_id": "esp32-cam-01",
-  "detections": [
-    {
-      "track_id": 1,
-      "class_name": "person",
-      "confidence": 0.87,
-      "bbox": [100.5, 200.3, 300.7, 450.2]
-    }
-  ]
-}
-```
-
----
-
-### 4. MinIO Writer
-
-**Location**: `minio/minio-writer.py`
-
-| Aspect | Details |
-|--------|---------|
-| **Purpose** | Batches detection JSON data and stores in MinIO |
-| **Input Topic** | `yolo-data-output` |
-| **Storage** | MinIO (S3-compatible object storage) |
-| **Bucket** | `detections-data` |
-| **Batch Strategy** | Upload after **50 detections** OR **30 seconds** |
-| **File Naming** | `YYYY/MM/DD/HH-MM-SS_batch.json` |
-
----
-
-### 5. Web Viewers
-
-#### Preprocessed Frame Viewer
-**Location**: `view-process/web_viewer.py`
-
-| Aspect | Details |
-|--------|---------|
-| **Port** | 5000 |
-| **Topic** | `yolo-input-frames` |
-| **Purpose** | View preprocessed frames before YOLO inference |
-| **Endpoint** | `/video_feed` (MJPEG stream) |
-
-#### Detection Viewer
-**Location**: `view-detection/detector_viewer.py`
-
-| Aspect | Details |
-|--------|---------|
-| **Port** | 7000 |
-| **Topic** | `yolo-visual-output` |
-| **Purpose** | View annotated frames with bounding boxes |
-| **Frame Rate** | ~25 FPS |
-
----
-
-## Infrastructure
-
-### Apache Kafka (Confluent Platform 7.5.0)
-- **Internal Broker**: `kafka:9092`
-- **External Broker**: `localhost:29092`
-- **Zookeeper**: Port 2181
-- **Topics**: Auto-created, single partition, replication factor 1
-- **Management UI**: Kafdrop at port 19000
-
-### MinIO (S3-Compatible Object Storage)
-- **API Port**: 9000
-- **Console UI**: 9001
-- **Default Credentials**: `minioadmin / minioadmin`
-- **Persistent Volume**: `minio_data`
-
-### Docker Volumes
-```yaml
-volumes:
-  zookeeper_data:    # Zookeeper state
-  zookeeper_log:     # Zookeeper logs
-  kafka_data:        # Kafka message storage
-  minio_data:        # MinIO object storage
-```
-
----
-
-## Kafka Topics
-
-| Topic Name | Producer | Consumer(s) | Payload Type |
-|------------|----------|-------------|--------------|
-| `esp32-video` | kafka-producer | preprocessor | Raw JPEG bytes |
-| `yolo-input-frames` | preprocessor | yolo-inference, kafka-viewer | JPEG bytes |
-| `yolo-visual-output` | yolo-inference | detector-viewer | Annotated JPEG bytes |
-| `yolo-data-output` | yolo-inference | minio-writer | JSON detection metadata |
-
----
-
-## Technology Stack
-
-| Layer | Technology |
-|-------|------------|
-| **Language** | Python 3.12 |
-| **ML Framework** | Ultralytics YOLO11 |
-| **Message Broker** | Apache Kafka (Confluent 7.5.0) |
-| **Object Storage** | MinIO |
-| **Web Framework** | Flask |
-| **Computer Vision** | OpenCV |
-| **Containerization** | Docker, Docker Compose |
-| **Compression** | LZ4 |
 
 ---
 
@@ -283,30 +50,24 @@ volumes:
 ### 1. Clone and Configure
 
 ```bash
-git clone https://github.com/Akin-ctrl/corvision.git
-cd corvision
+git clone https://github.com/Akin-ctrl/CVops.git
+cd CVops
 
-# Edit .env with your camera URL
+# Configure your camera URL
 nano .env
 ```
 
-### 2. Build Services (First Time Only)
+### 2. Build and Start
 
 ```bash
-# Build all services to include metrics support
+# Build all services
 docker compose build
 
-# Or build specific services
-docker compose build kafka-producer kafka-preprocessor yolo-inference minio-writer
-```
-
-### 3. Start All Services
-
-```bash
+# Start infrastructure
 docker compose up -d
 ```
 
-### 4. Access Web Interfaces
+### 3. Access Web Interfaces
 
 | Service | URL | Credentials |
 |---------|-----|-------------|
@@ -317,87 +78,85 @@ docker compose up -d
 | Kafka Management | http://localhost:19000 | (none) |
 | MinIO Console | http://localhost:9001 | minioadmin / minioadmin |
 
-**First-time Grafana setup:**
-1. Login with `admin` / `admin`
-2. Change password when prompted
-3. Go to **Dashboards** → **CoRVision Overview** to see real-time metrics
-
-### 5. Verify Observability
+### 4. Common Operations
 
 ```bash
-# Check if metrics are being collected
-curl http://localhost:8000/metrics  # Producer
-curl http://localhost:8002/metrics  # YOLO Inference
-
-# Check Prometheus targets (all should show "UP")
-# Open http://localhost:9090 → Status → Targets
-```
-
-### 6. View Logs
-
-```bash
-# All services
+# View logs
 docker compose logs -f
 
-# Specific service
-docker compose logs -f yolo_inference
+# Restart a service
+docker compose restart yolo_inference
 
-# Observability services
-docker compose logs -f prometheus grafana
-```
-
-### 7. Stop Services
-
-```bash
+# Stop all services
 docker compose down
 
-# With volume cleanup
+# Full cleanup (removes volumes)
 docker compose down -v
 ```
+
+For detailed setup instructions, see the [Quick Start Guide](doc/guides/OBSERVABILITY_QUICKSTART.md).
+
+---
+
+## Technology Stack
+
+| Layer | Technology |
+|-------|------------|
+| **Language** | Python 3.12 |
+| **ML Framework** | Ultralytics YOLO11 |
+| **Message Broker** | Apache Kafka (Confluent 7.5.0) |
+| **Object Storage** | MinIO (S3-compatible) |
+| **Web Framework** | Flask |
+| **Computer Vision** | OpenCV |
+| **Monitoring** | Prometheus + Grafana |
+| **Containerization** | Docker, Docker Compose |
 
 ---
 
 ## Configuration
 
-All configuration is managed via the `.env` file:
+Core settings in `.env`:
 
 ```env
-# Camera Configuration
+# Camera
 URL=http://192.168.x.x:8080/stream
 
-# Kafka Configuration
+# Kafka
 KAFKA_BROKER=kafka:9092
-KAFKA_TOPIC_1=esp32-video
-KAFKA_TOPIC_2=yolo-input-frames
-KAFKA_TOPIC_3=yolo-data-output
-KAFKA_TOPIC_4=yolo-visual-output
 
-# Consumer Groups
-CONSUMER_GROUP_ID_1=preprocessor-group
-CONSUMER_GROUP_ID_2=web-viewer-group
-CONSUMER_GROUP_ID_3=yolo-inference-group
-CONSUMER_GROUP_ID_4=detector-viewer-group
-CONSUMER_GROUP_ID_5=minio-writer-group
-
-# YOLO Configuration
+# YOLO
 YOLO_INPUT_SIZE_WIDTH=640
 YOLO_INPUT_SIZE_HEIGHT=640
 MODEL_WEIGHTS_PATH=yolo11n.pt
 
-# MinIO Configuration
+# MinIO
 MINIO_HOST=minio:9000
 MINIO_ACCESS_KEY=minioadmin
 MINIO_SECRET_KEY=minioadmin
 ```
 
+For advanced configuration and tuning, see:
+- [Performance Tuning Guide](doc/guides/PERFORMANCE_TUNING.md)
+- [GPU Setup Guide](doc/guides/GPU_SETUP.md)
+- [Architecture Documentation](doc/architecture/README.md)
+
 ---
 
-## Exposed Ports
+## License
 
-### Core Services
+MIT License - See LICENSE file for details.
 
-| Port | Service | Purpose |
-|------|---------|---------|
+---
+
+## Additional Resources
+
+- **System Architecture**: [doc/architecture/README.md](doc/architecture/README.md)
+- **GPU Acceleration**: [doc/guides/GPU_SETUP.md](doc/guides/GPU_SETUP.md)  
+- **Monitoring Setup**: [doc/guides/OBSERVABILITY.md](doc/guides/OBSERVABILITY.md)
+- **CPU Optimization**: [doc/guides/PERFORMANCE_TUNING.md](doc/guides/PERFORMANCE_TUNING.md)
+- **Future Plans**: [doc/proposals/](doc/proposals/)
+
+For questions or issues, please open a GitHub issue.
 | 2181 | Zookeeper | Kafka coordination |
 | 9092 | Kafka (internal) | Internal broker |
 | 29092 | Kafka (external) | Host access |
@@ -442,11 +201,11 @@ CoRVision includes comprehensive observability with **Prometheus** for metrics c
 
 ### What's Included
 
-✅ **Prometheus** - Metrics collection and time-series database  
-✅ **Grafana** - Beautiful dashboards with pre-configured CoRVision Overview  
-✅ **Real-time Metrics** - FPS, latency, detections, errors, and more  
-✅ **Service Health Monitoring** - Instant visibility into service status  
-✅ **Automated Setup** - Pre-provisioned datasources and dashboards  
+ **Prometheus** - Metrics collection and time-series database  
+ **Grafana** - Beautiful dashboards with pre-configured CoRVision Overview  
+ **Real-time Metrics** - FPS, latency, detections, errors, and more  
+ **Service Health Monitoring** - Instant visibility into service status  
+ **Automated Setup** - Pre-provisioned datasources and dashboards  
 
 ### Quick Access
 
@@ -465,27 +224,27 @@ After starting the system with `docker compose up -d`, access:
 
 ### Dashboard Panels
 
-The **CoRVision Overview** dashboard provides:
+The **Overview** dashboard provides:
 
-📊 **Processing FPS by Service** - Real-time frames per second for each microservice  
-⏱️ **Processing Latency** - Gauge showing current latency with color-coded thresholds  
-🎯 **Total Detections by Class** - Time series of detected objects (person, car, etc.)  
-✅ **Service Health** - Status indicators showing which services are up/down  
-📨 **Kafka Message Throughput** - Messages consumed/produced per second  
-❌ **Error Rate** - Errors per service over time, grouped by error type  
+ **Processing FPS by Service** - Real-time frames per second for each microservice  
+ **Processing Latency** - Gauge showing current latency with color-coded thresholds  
+ **Total Detections by Class** - Time series of detected objects (person, car, etc.)  
+ **Service Health** - Status indicators showing which services are up/down  
+ **Kafka Message Throughput** - Messages consumed/produced per second  
+ **Error Rate** - Errors per service over time, grouped by error type  
 
 ### Observability Architecture
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │                     CoRVision Services                       │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐     │
-│  │ Producer │  │Preprocess│  │   YOLO   │  │  MinIO   │     │
-│  │  :8000   │  │  :8001   │  │  :8002   │  │ Writer   │     │
-│  │          │  │          │  │          │  │  :8003   │     │
-│  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘     │
-│       │             │             │             │           │
-│       └─────────────┴─────────────┴─────────────┘           │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐      │
+│  │ Producer │  │Preprocess│  │   YOLO   │  │  MinIO   │      │
+│  │  :8000   │  │  :8001   │  │  :8002   │  │ Writer   │      │
+│  │          │  │          │  │          │  │  :8003   │      │
+│  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘      │
+│       │             │             │             │            │
+│       └─────────────┴─────────────┴─────────────┘            │
 │                         │ Metrics (HTTP)                     │
 │                         ▼                                    │
 │              ┌─────────────────────┐                         │
@@ -634,378 +393,6 @@ histogram_quantile(0.5, corvision_detection_confidence)
 
 ### Additional Resources
 
-📖 **Full Documentation**: [OBSERVABILITY.md](./OBSERVABILITY.md) - Complete guide with advanced queries, alerting, and best practices  
-⚡ **Quick Reference**: [OBSERVABILITY_QUICKSTART.md](./OBSERVABILITY_QUICKSTART.md) - 5-minute setup guide  
+ **Full Documentation**: [Observability Guide](doc/guides/OBSERVABILITY.md) - Complete guide with advanced queries, alerting, and best practices  
+ **Quick Reference**: [Quick Start Guide](doc/guides/OBSERVABILITY_QUICKSTART.md) - 5-minute setup guide  
 
----
-
-## Recommended Improvements
-
-### ✅ Phase 2 Complete - Reliability & Fault Tolerance
-
-| Feature | Implementation Status |
-|---------|----------------------|
-| **Health & Readiness Endpoints** | ✅ All services now expose `/health`, `/ready`, and `/metrics` endpoints for container orchestration |
-| **Manual Kafka Commits** | ✅ Replaced auto-commit with manual `consumer.commit()` after successful processing to prevent message loss |
-| **Dead Letter Queue (DLQ)** | ✅ Added three DLQ topics for error tracking: `dlq-preprocessing-errors`, `dlq-inference-errors`, `dlq-storage-errors` |
-| **Service Scaling Support** | ✅ Removed container names from scalable services, increased Kafka partitions to 3 for parallel consumption |
-| **Health State Tracking** | ✅ Each service maintains health_state dictionary tracking connection status and processing activity |
-
-**Testing Phase 2 Features:**
-
-```bash
-# Start all services
-docker compose up --build
-
-# Check health endpoints
-curl http://localhost:8000/health  # Camera producer
-curl http://localhost:8001/health  # Preprocessor
-curl http://localhost:8002/health  # YOLO inference
-curl http://localhost:8003/health  # MinIO writer
-curl http://localhost:5000/health  # Preprocessed viewer
-curl http://localhost:7000/health  # Detection viewer
-
-# Check readiness endpoints
-curl http://localhost:5000/ready  # Returns 200 if frames available
-curl http://localhost:7000/ready  # Returns 200 if detections available
-
-# Scale preprocessor service (Kafka consumer group load balancing)
-docker compose up --scale kafka-preprocessor=2
-
-# Monitor DLQ topics in Kafdrop
-open http://localhost:19000
-# Check topics: dlq-preprocessing-errors, dlq-inference-errors, dlq-storage-errors
-
-# View Prometheus metrics
-curl http://localhost:8000/metrics  # Camera producer metrics
-curl http://localhost:8002/metrics  # YOLO inference metrics
-```
-
-**Health Check Details:**
-
-| Service | Health Endpoint | Ready Check | Metrics Port |
-|---------|----------------|-------------|--------------|
-| Camera Producer | http://localhost:8000/health | Kafka connected, camera connected, frames flowing | 8000 |
-| Preprocessor | http://localhost:8001/health | Kafka consumer/producer connected, processing messages | 8001 |
-| YOLO Inference | http://localhost:8002/health | Kafka connected, model loaded, processing frames | 8002 |
-| MinIO Writer | http://localhost:8003/health | Kafka connected, MinIO connected, writing data | 8003 |
-| Preprocessed Viewer | http://localhost:5000/health | Flask running, frames available | 8004 |
-| Detection Viewer | http://localhost:7000/health | Flask running, detections available | 8005 |
-
-**DLQ Message Format:**
-
-```json
-{
-  "error": "error description",
-  "original_key": "camera_0_frame_12345_1234567890.123",
-  "offset": 12345,
-  "partition": 0,
-  "timestamp": 1234567890.123,
-  "service": "preprocessor|yolo-inference|minio-writer"
-}
-```
-
----
-
-### ✅ Phase 3 Complete - GPU Acceleration
-
-| Feature | Implementation Status |
-|---------|----------------------|
-| **GPU Detection** | ✅ Automatic CUDA availability check with fallback to CPU |
-| **Device Auto-Selection** | ✅ Smart device selection: `auto`, `cuda`, `cpu` modes |
-| **GPU Metrics** | ✅ Prometheus metrics for utilization, memory, temperature |
-| **Multi-GPU Support** | ✅ Automatic selection of GPU with most free memory |
-| **Docker GPU Runtime** | ✅ NVIDIA Container Toolkit integration ready |
-| **Performance Monitoring** | ✅ Inference speedup tracking and FPS metrics |
-
-**Performance Results:**
-
-| Device | Input Size | FPS | Inference Time | Speedup |
-|--------|------------|-----|----------------|---------|
-| CPU (Baseline) | 416x416 | 15-20 | ~55ms | 1x |
-| GPU (RTX 3060) | 416x416 | 150-180 | ~6ms | ~10x |
-| GPU (RTX 3060) | 640x640 | 80-120 | ~10ms | ~8x (higher quality) |
-
-**Setup GPU Acceleration:**
-
-```bash
-# Install NVIDIA Container Toolkit (one-time setup)
-distribution=$(. /etc/os-release;echo $ID$VERSION_ID)
-curl -s -L https://nvidia.github.io/nvidia-docker/gpgkey | sudo apt-key add -
-curl -s -L https://nvidia.github.io/nvidia-docker/$distribution/nvidia-docker.list | \
-  sudo tee /etc/apt/sources.list.d/nvidia-docker.list
-sudo apt update && sudo apt install -y nvidia-container-toolkit
-sudo systemctl restart docker
-
-# Enable GPU in docker-compose.yml (uncomment deploy.resources section)
-# Then rebuild and start
-docker compose down
-docker compose build yolo-inference
-docker compose up -d
-
-# Verify GPU usage
-curl http://localhost:8002/health | jq
-nvidia-smi  # Watch GPU utilization
-```
-
-**GPU Metrics Available:**
-
-```bash
-curl http://localhost:8002/metrics | grep gpu
-
-# corvision_gpu_available{service="yolo-inference"} 1.0
-# corvision_gpu_utilization_percent{gpu_id="0"} 85.0
-# corvision_gpu_memory_used_mb{gpu_id="0"} 3456.0
-# corvision_gpu_temperature_celsius{gpu_id="0"} 65.0
-# corvision_inference_speedup_factor{service="yolo-inference"} 12.5
-```
-
-**See [GPU_SETUP.md](GPU_SETUP.md) for complete setup guide, troubleshooting, and multi-GPU configuration.**
-
----
-
-### ✅ Phase 4 Complete - Adaptive Frame Sampling & Frame Storage
-
-| Feature | Implementation Status |
-|---------|----------------------|
-| **Motion Detection** | ✅ Frame differencing with configurable threshold (% pixels changed) |
-| **Adaptive Sampling** | ✅ Skip static frames, always send frames with motion |
-| **Min Frame Interval** | ✅ Guaranteed frame rate (prevent indefinite skipping) |
-| **Frame Storage** | ✅ Save annotated frames to MinIO for review/debugging |
-| **Organized Storage** | ✅ Hierarchical storage: YYYY/MM/DD/HH/frame_ID.jpg |
-| **New Metrics** | ✅ frames_skipped, motion_score, frames_saved metrics |
-
-**Efficiency Gains:**
-
-| Scenario | Frames Processed | Frames Skipped | CPU Savings | Storage Savings |
-|----------|------------------|----------------|-------------|-----------------|
-| Static scene (security cam at night) | 10-20% | 80-90% | ~80% | ~85% |
-| Low activity (office during work) | 30-50% | 50-70% | ~60% | ~65% |
-| High activity (busy street) | 70-90% | 10-30% | ~20% | ~25% |
-| Continuous motion (highway) | 95-100% | 0-5% | ~3% | ~5% |
-
-**Configuration Options:**
-
-```yaml
-# In docker-compose.yml - kafka-preprocessor service
-ENABLE_MOTION_DETECTION: "true"      # Enable/disable motion detection
-MOTION_THRESHOLD: "5.0"              # % pixels changed (1-20 typical, lower=more sensitive)
-MIN_FRAME_INTERVAL: "0.5"            # Min seconds between frames (prevents indefinite skipping)
-
-# In docker-compose.yml - minio-writer service
-SAVE_ANNOTATED_FRAMES: "true"        # Save frames with detection boxes
-FRAMES_BUCKET_NAME: "annotated-frames"  # MinIO bucket for frames
-```
-
-**Storage Estimates (24-hour period):**
-
-| Frame Rate | Resolution | Frames/Day | Storage/Day (JPEG @85% quality) |
-|------------|------------|------------|----------------------------------|
-| 1 FPS (static) | 640x480 | 86,400 | ~2.5 GB |
-| 5 FPS (low activity) | 640x480 | 432,000 | ~12 GB |
-| 15 FPS (high activity) | 640x480 | 1,296,000 | ~35 GB |
-| 30 FPS (continuous) | 1920x1080 | 2,592,000 | ~150 GB |
-
-**New Prometheus Metrics:**
-
-```bash
-# Motion detection metrics
-curl http://localhost:8001/metrics | grep -E "motion|skipped"
-
-# corvision_frames_skipped_total{service="preprocessor"} 8542
-# corvision_motion_score_percent{service="preprocessor"} 12.5
-
-# Frame storage metrics
-curl http://localhost:8003/metrics | grep frames_saved
-
-# corvision_minio_frames_saved_total{service="minio-writer"} 3421
-```
-
-**Browse Stored Frames:**
-
-```bash
-# Access MinIO Console
-open http://localhost:9001
-# Login: minioadmin / minioadmin
-# Navigate to 'annotated-frames' bucket
-# Browse by date: 2025/12/22/14/frame_1234_1734876543000.jpg
-```
-
-**Disable Features (if needed):**
-
-```bash
-# Disable motion detection (process all frames)
-ENABLE_MOTION_DETECTION: "false"
-
-# Disable frame storage (save storage space)
-SAVE_ANNOTATED_FRAMES: "false"
-```
-
----
-
-### 🟡 Medium Priority (Remaining)
-
-#### Performance & Scalability
-
-| Issue | Recommendation | Status |
-|-------|----------------|--------|
-| ~~**Single Kafka partition**~~ | ~~Increase partitions to enable parallel consumption~~ | ✅ **DONE** - Phase 2 |
-| ~~**CPU-only inference**~~ | ~~Add GPU support with NVIDIA Container Toolkit~~ | ✅ **DONE** - Phase 3 (10-50x speedup) |
-| ~~**Frame skipping is aggressive**~~ | ~~Implement adaptive frame sampling based on scene changes (motion detection)~~ | ✅ **DONE** - Phase 4 (60-80% reduction) |
-| **No backpressure handling** | Add metrics to detect when consumers fall behind and trigger alerts | Partially done - metrics exist, need alerts |
-| ~~**Preprocessor does nothing**~~ | ~~Enable CLAHE preprocessing~~ | ✅ **DONE** - Phase 2 (toggleable) |
-
-#### Data & Storage
-
-| Issue | Recommendation | Status |
-|-------|----------------|--------|
-| **JSON batches hard to query** | Store in Parquet format or use a time-series DB (TimescaleDB, InfluxDB) | Planned for Phase 5 |
-| ~~**No frame storage**~~ | ~~Optionally save annotated frames to MinIO for review/debugging~~ | ✅ **DONE** - Phase 4 (YYYY/MM/DD/HH hierarchy) |
-| **No data retention policy** | Add lifecycle rules to MinIO to auto-expire old data | Planned for Phase 5 |
-| **Hardcoded camera ID** | Make `camera_id` dynamic, support multiple cameras | Planned for Phase 6 |
-
----
-
-### 🟢 Lower Priority
-
-#### Security
-
-| Risk | Mitigation |
-|------|------------|
-| **MinIO credentials in plain text** | Use Docker secrets or HashiCorp Vault |
-| **No authentication on viewers** | Add basic auth or OAuth to Flask apps |
-| **No TLS** | Enable HTTPS for web viewers, TLS for Kafka |
-| **Network mode host** | Avoid `network_mode: host` on producer; use proper Docker networking |
-
-#### Developer Experience
-
-| Pain Point | Fix |
-|------------|-----|
-| **Long rebuild times** | Use multi-stage Dockerfiles, separate dependency layers |
-| **No local development mode** | Add `docker-compose.override.yml` with hot-reload (volume mounts) |
-| **No tests** | Add unit tests for preprocessing, integration tests for Kafka flow |
-| **No CI/CD** | Add GitHub Actions for build, test, and push to registry |
-
-#### Architecture Enhancements
-
-| Enhancement | Benefit |
-|-------------|---------|
-| **Add Redis for caching** | Cache model weights, share state between replicas |
-| **Kubernetes migration** | Better scaling, self-healing, resource management |
-| **Add API gateway** | Unified entry point with rate limiting (Kong, Traefik) |
-| **Model versioning** | Store models in MLflow or MinIO with version tracking |
-| **Event sourcing** | Store raw events for replay/reprocessing during model updates |
-
----
-
-### ⚡ Quick Wins (Low Effort, High Impact)
-
-1. **Enable Kafdrop authentication** - currently open to anyone
-2. **Add `restart: unless-stopped`** to MinIO service
-3. **Pin image versions** - avoid `latest` tags for reproducibility
-4. **Add `.dockerignore`** - exclude `pip_wheels/` from unnecessary copies
-5. **Externalize all configs** - move hardcoded values like ports to `.env`
-6. **Add graceful shutdown** - handle SIGTERM properly in all Python services
-
----
-
-### 📅 Improvement Roadmap
-
-```
-Phase 1 (Complete):    ✅ Observability → Prometheus + Grafana dashboards
-Phase 2 (Short-term):  Reliability   → DLQ, health checks, manual Kafka commits
-Phase 3 (Medium-term): Performance   → GPU support, multi-partition Kafka
-Phase 4 (Long-term):   Scale         → Kubernetes migration, multi-camera support
-```
-
----
-
-## Use Cases
-
-- **Security/Surveillance**: Real-time detection of people, vehicles, objects
-- **IoT Edge Analytics**: Process ESP32-CAM streams for smart home/building
-- **Traffic Monitoring**: Detect and count vehicles/pedestrians
-- **Industrial Inspection**: Monitor production lines for defects
-- **Research & Development**: ML model experimentation with live video feeds
-- **Retail Analytics**: Customer counting and behavior analysis
-
----
-
-## Project Structure
-
-```
-corvision/
-├── docker-compose.yml          # Main orchestration file
-├── .env                        # Environment configuration
-├── test.py                     # Camera stream testing utility
-│
-├── kafka-producers/            # Video stream ingestion
-│   ├── Dockerfile.producer
-│   ├── camera-stream-1.py
-│   └── requirements.txt
-│
-├── kafka-consumer/             # Frame preprocessing
-│   ├── Dockerfile.consumer
-│   ├── preprocessor.py
-│   └── requirements.txt
-│
-├── model/                      # YOLO inference service
-│   ├── Dockerfile.model
-│   ├── model_inference.py
-│   ├── yolo11n.pt             # YOLO model weights
-│   ├── requirements.txt
-│   └── pip_wheels/            # Offline dependencies
-│
-├── minio/                      # Detection data storage
-│   ├── Dockerfile.minio-writer
-│   ├── minio-writer.py
-│   └── requirements.txt
-│
-├── view-process/               # Preprocessed frame viewer
-│   ├── Dockerfile.viewer
-│   ├── web_viewer.py
-│   └── requirements.txt
-│
-├── view-detection/             # Detection result viewer
-│   ├── Dockerfile.viewer-d
-│   ├── detector_viewer.py
-│   ├── requirements.txt
-│   └── pip_wheels/            # Offline dependencies
-│
-├── prometheus/                 # Observability - Metrics collection
-│   └── prometheus.yml         # Scrape configuration
-│
-├── grafana/                    # Observability - Dashboards
-│   └── provisioning/
-│       ├── datasources/       # Auto-configured Prometheus
-│       └── dashboards/        # Pre-built CoRVision dashboard
-│
-├── OBSERVABILITY.md           # Complete observability guide
-└── OBSERVABILITY_QUICKSTART.md # 5-minute setup guide
-```
-
----
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
----
-
-## License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
----
-
-## Acknowledgments
-
-- [Ultralytics YOLO](https://docs.ultralytics.com/) for the object detection model
-- [Apache Kafka](https://kafka.apache.org/) for the message streaming platform
-- [MinIO](https://min.io/) for S3-compatible object storage
-- [Confluent](https://www.confluent.io/) for Kafka Docker images
-- [Prometheus](https://prometheus.io/) & [Grafana](https://grafana.com/) for observability

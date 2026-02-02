@@ -1,11 +1,15 @@
-# Quick Start: Enable Observability
+# Quick Start: Observability Setup
+
+Get Prometheus and Grafana running in 5 minutes.
+
+---
 
 ## What's Included
 
-✅ **Prometheus** - Metrics collection (port 9090)  
-✅ **Grafana** - Visualization dashboards (port 3000)  
-✅ **Pre-configured Dashboard** - CoRVision Overview  
-✅ **Metrics Integration** - All services instrumented  
+ **Prometheus** - Metrics collection (port 9090)  
+ **Grafana** - Visualization dashboards (port 3000)  
+ **Pre-configured Dashboard** - CoRVision Overview  
+ **Metrics Integration** - All services instrumented  
 
 ---
 
@@ -40,12 +44,12 @@ docker compose up -d
 
 ### CoRVision Overview Dashboard
 
-📊 **Processing FPS** - Real-time frames per second for each service  
-⏱️ **Processing Latency** - How long each service takes  
-🎯 **Detections** - Object detection counts by class  
-✅ **Service Health** - Which services are up/down  
-📨 **Kafka Throughput** - Message flow through pipeline  
-❌ **Error Rate** - Errors by service and type  
+ **Processing FPS** - Real-time frames per second for each service  
+ **Processing Latency** - How long each service takes  
+ **Detections** - Object detection counts by class  
+ **Service Health** - Which services are up/down  
+ **Kafka Throughput** - Message flow through pipeline  
+ **Error Rate** - Errors by service and type  
 
 ---
 
@@ -118,10 +122,10 @@ docker compose exec grafana ls /etc/grafana/provisioning/datasources/
 
 ## Next Steps
 
-📖 Read full documentation: [OBSERVABILITY.md](./OBSERVABILITY.md)  
-🎯 Customize dashboards in Grafana  
-🔔 Set up alerts for production use  
-📊 Analyze metrics to optimize performance  
+ **Read full documentation**: [Observability Guide](OBSERVABILITY.md)  
+ **Customize dashboards** in Grafana  
+ **Set up alerts** for production use  
+ **Analyze metrics** to optimize performance  
 
 ---
 
@@ -143,23 +147,26 @@ corvision_service_up
 
 ---
 
-## Files Added
+## Configuration Files
+
+The observability stack includes:
 
 ```
-corvision/
-├── prometheus/
-│   └── prometheus.yml              # Prometheus configuration
-├── grafana/
-│   └── provisioning/
-│       ├── datasources/
-│       │   └── prometheus.yml      # Auto-configure Prometheus datasource
-│       └── dashboards/
-│           ├── dashboard.yml       # Dashboard provider config
-│           └── corvision-overview.json  # Pre-built dashboard
-├── OBSERVABILITY.md               # Full documentation
-└── OBSERVABILITY_QUICKSTART.md    # This file
+prometheus/
+└── prometheus.yml              # Metrics scrape configuration
+
+grafana/
+└── provisioning/
+    ├── datasources/
+    │   └── prometheus.yml      # Auto-configured Prometheus datasource
+    └── dashboards/
+        ├── dashboard.yml       # Dashboard provider config
+        └── corvision-overview.json  # Pre-built dashboard
 ```
 
 ---
 
-**That's it!** Your CoRVision system now has full observability. 🎉
+**That's it!** Your CVops system now has full observability. 
+
+For detailed configuration and advanced features, see the [complete Observability Guide](OBSERVABILITY.md).
+

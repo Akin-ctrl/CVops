@@ -1,2 +1,5 @@
 .env
 pip_wheels/
+reference.py
+doc/proposals
+doc/guides/GPU_SETUP.md

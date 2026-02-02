@@ -6,27 +6,27 @@ This guide helps you optimize CVops for CPU-only environments while maintaining 
 
 ---
 
-## 🎯 Current Optimized Configuration
+##  Current Optimized Configuration
 
 ### Preprocessor Settings
 | Setting | Value | Impact | CPU Cost |
 |---------|-------|--------|----------|
-| **ENABLE_CLAHE** | `true` | ✅ Better detection in varying lighting | +2-5ms/frame |
-| **INPUT_SIZE** | `416x416` | ⚖️ Balanced accuracy & speed | Medium |
-| **OUTPUT_JPEG_QUALITY** | `90` | ✅ Preserves detail for YOLO | Minimal |
-| **Frame Skipping** | Latest only | ⚡ Prevents lag, maintains real-time | None |
+| **ENABLE_CLAHE** | `true` |  Better detection in varying lighting | +2-5ms/frame |
+| **INPUT_SIZE** | `416x416` |  Balanced accuracy & speed | Medium |
+| **OUTPUT_JPEG_QUALITY** | `90` |  Preserves detail for YOLO | Minimal |
+| **Frame Skipping** | Latest only |  Prevents lag, maintains real-time | None |
 
 ### YOLO Inference Settings
 | Setting | Value | Impact | Performance |
 |---------|-------|--------|-------------|
-| **Model** | YOLO11n | ⚡ Fastest YOLO variant | ~50-100ms/frame (CPU) |
-| **INPUT_SIZE** | `416` | ⚖️ Best balance for CPU | Medium |
-| **USE_TRACKING** | `false` | ⚡ Detection only (no tracking overhead) | 30-40% faster |
-| **DEVICE** | `cpu` | 🖥️ No GPU required | Baseline |
+| **Model** | YOLO11n |  Fastest YOLO variant | ~50-100ms/frame (CPU) |
+| **INPUT_SIZE** | `416` |  Best balance for CPU | Medium |
+| **USE_TRACKING** | `false` |  Detection only (no tracking overhead) | 30-40% faster |
+| **DEVICE** | `cpu` |  No GPU required | Baseline |
 
 ---
 
-## ⚙️ Configuration Options
+##  Configuration Options
 
 ### 1. Maximum Quality (Slower)
 **Use when**: Detection accuracy is critical, frame rate can be 5-10 FPS
@@ -43,12 +43,11 @@ INPUT_SIZE: "640"
 USE_TRACKING: "false"
 ```
 
-**Expected Performance**: 5-10 FPS on modern CPU (Core i5/Ryzen 5)
-**Detection Quality**: ⭐⭐⭐⭐⭐ Excellent
+
 
 ---
 
-### 2. Balanced (Recommended) ✅
+### 2. Balanced (Recommended) 
 **Use when**: Need good quality with acceptable frame rate (15-20 FPS)
 
 ```yaml
@@ -62,9 +61,6 @@ ENABLE_CLAHE: "true"
 INPUT_SIZE: "416"
 USE_TRACKING: "false"
 ```
-
-**Expected Performance**: 15-20 FPS on modern CPU
-**Detection Quality**: ⭐⭐⭐⭐ Very Good
 
 ---
 
@@ -82,27 +78,23 @@ ENABLE_CLAHE: "false"
 INPUT_SIZE: "320"
 USE_TRACKING: "false"
 ```
-
-**Expected Performance**: 25-30 FPS on modern CPU
-**Detection Quality**: ⭐⭐⭐ Good for large objects
-
 ---
 
-## 🔬 CLAHE Preprocessing Impact
+##  CLAHE Preprocessing Impact
 
 ### What is CLAHE?
 **Contrast Limited Adaptive Histogram Equalization** improves image contrast in varying lighting conditions.
 
 ### When to Enable CLAHE?
 
-✅ **Enable CLAHE when**:
+ **Enable CLAHE when**:
 - Outdoor cameras with varying sunlight/shadows
 - Low-light or nighttime scenarios
 - Weather variations (fog, rain, overcast)
 - Inconsistent artificial lighting
 - Small objects that need better contrast
 
-❌ **Disable CLAHE when**:
+ **Disable CLAHE when**:
 - Consistent, well-controlled lighting
 - Maximum speed is critical
 - Objects are large and well-lit
@@ -127,7 +119,7 @@ Quality gain: +10-30% detection accuracy in varying lighting
 
 ---
 
-## 🎛️ Fine-Tuning Parameters
+##  Fine-Tuning Parameters
 
 ### CLAHE Parameters (in preprocessor.py)
 ```python
@@ -155,10 +147,10 @@ Quality 100: Lossless, largest size, no benefit over 95
 
 ---
 
-## 📊 Benchmark Results
+##  Benchmark Results
 
 ### Test Setup
-- **CPU**: AMD Ryzen 5 / Intel Core i5 (typical modern CPU)
+- **CPU**: Intel Core i5 (typical modern CPU)
 - **Image**: 640x480 JPEG from ESP32-CAM
 - **Model**: YOLO11n
 
@@ -174,7 +166,7 @@ Quality 100: Lossless, largest size, no benefit over 95
 
 ---
 
-## 🚀 Additional CPU Optimizations
+##  Additional CPU Optimizations
 
 ### 1. **Reduce Camera Resolution**
 If your ESP32-CAM is sending high-resolution frames:
@@ -218,7 +210,7 @@ max_batch_size = 4  # Process 4 frames at once
 
 ---
 
-## 🎯 Quick Settings Reference
+##  Quick Settings Reference
 
 ### Real-Time Monitoring (Must Be Fast)
 ```bash
@@ -243,7 +235,7 @@ JPEG_QUALITY: 95
 
 ---
 
-## 📈 Monitoring Performance
+##  Monitoring Performance
 
 ### Check Current FPS
 ```bash
@@ -272,7 +264,7 @@ rate(corvision_frames_processed_total[1m])
 
 ---
 
-## 🔮 Future: GPU Acceleration
+##  Future: GPU Acceleration
 
 When GPU is available, expected improvements:
 - YOLO11n inference: **50-100ms → 5-10ms** (10x faster)
@@ -288,15 +280,16 @@ ENABLE_CLAHE: "true"  # No performance penalty
 
 ---
 
-## ✅ Summary
+##  Summary
 
 **For CPU-only deployment, use the Balanced configuration:**
-- ✅ CLAHE enabled for quality
-- ✅ 416x416 input size
-- ✅ JPEG quality 90
-- ✅ Frame skipping enabled
-- ✅ Tracking disabled
+-  CLAHE enabled for quality
+-  416x416 input size
+-  JPEG quality 90
+-  Frame skipping enabled
+-  Tracking disabled
 
 **Expected**: 15-20 FPS with good detection quality on modern CPUs.
 
 **To optimize further**: Monitor metrics, identify bottlenecks, scale horizontally.
+
