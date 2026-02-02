@@ -9,7 +9,7 @@ A **distributed, real-time computer vision pipeline** designed for edge-to-cloud
 
 ---
 
-## Sandbox Station (Submission)
+## Sandbox Station 
 
 This repository serves as a sandbox station baseline for **Edge AI Vision** exploration. Attendees can tune inference parameters, sampling strategies, and preprocessing to explore real-time performance/accuracy trade-offs on edge hardware.
 
