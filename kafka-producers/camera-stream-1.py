@@ -24,6 +24,8 @@ import time
 import os
 import sys
 from typing import Optional, Dict, Any
+from urllib.parse import urlparse, urlunparse
+from urllib.request import Request, urlopen
 from kafka import KafkaProducer
 from dotenv import load_dotenv
 from prometheus_client import Counter, Gauge
@@ -171,6 +173,53 @@ def read_frame(cap: cv2.VideoCapture, timeout: int = 5) -> Optional[np.ndarray]:
             return None
 
 
+def derive_snapshot_candidates(url: Optional[str]) -> list[str]:
+    """
+    Generate likely ESP32 snapshot endpoints from a stream URL.
+
+    Examples:
+        http://<ip>:81/stream ->
+            - http://<ip>:81/capture
+            - http://<ip>/capture
+    """
+    if not url:
+        return []
+
+    parsed = urlparse(url)
+    candidates: list[str] = []
+
+    if parsed.path and "/stream" in parsed.path:
+        candidates.append(url.replace("/stream", "/capture"))
+
+    if parsed.scheme and parsed.netloc:
+        candidates.append(urlunparse((parsed.scheme, parsed.netloc, "/capture", "", "", "")))
+
+    if parsed.scheme and parsed.hostname:
+        candidates.append(f"{parsed.scheme}://{parsed.hostname}/capture")
+
+    unique_candidates: list[str] = []
+    seen = set()
+    for candidate in candidates:
+        if candidate not in seen:
+            unique_candidates.append(candidate)
+            seen.add(candidate)
+    return unique_candidates
+
+
+def fetch_snapshot_frame(url: str, timeout: int = 5) -> Optional[np.ndarray]:
+    """Fetch one JPEG frame from HTTP snapshot endpoint (e.g. ESP32 /capture)."""
+    try:
+        request = Request(url, headers={"User-Agent": "cvops-kafka-producer"})
+        with urlopen(request, timeout=timeout) as response:
+            payload = response.read()
+
+        image_buffer = np.frombuffer(payload, dtype=np.uint8)
+        frame = cv2.imdecode(image_buffer, cv2.IMREAD_COLOR)
+        return frame
+    except Exception:
+        return None
+
+
 def publish_frame(producer: KafkaProducer, topic: str, frame: np.ndarray) -> bool:
     """
     Encode frame as JPEG and publish to Kafka topic.
@@ -231,23 +280,6 @@ def main() -> None:
         - Fatal connection failures
         - Stream reconnection failure
     """
-def main() -> None:
-    """
-    Main producer loop - capture frames and publish to Kafka.
-    
-    Workflow:
-        1. Start metrics server in background
-        2. Connect to Kafka
-        3. Open camera stream
-        4. Loop: read frame -> publish -> sleep
-        5. Reconnect on stream failures
-        6. Clean up resources on exit
-    
-    Exit Conditions:
-        - KeyboardInterrupt (Ctrl+C)
-        - Fatal connection failures
-        - Stream reconnection failure
-    """
     # Start HTTP server in background (health, ready, metrics)
     server_thread = threading.Thread(target=start_metrics_server, daemon=True)
     server_thread.start()
@@ -259,12 +291,24 @@ def main() -> None:
         logging.error("Exiting: Cannot connect to Kafka")
         return
 
-    # Initialize camera stream
+    # Initialize camera stream (VideoCapture mode)
     cap = capture_stream(URL)
+    snapshot_url: Optional[str] = None
+
+    # Fallback to snapshot mode for ESP32 cameras when stream endpoint is unavailable
     if not cap:
-        service_up.labels(service=SERVICE_NAME).set(0)
-        logging.error("Exiting: Cannot open camera stream")
-        return
+        for candidate in derive_snapshot_candidates(URL):
+            frame = fetch_snapshot_frame(candidate, timeout=FRAME_READ_TIMEOUT)
+            if frame is not None:
+                snapshot_url = candidate
+                health_state['camera_connected'] = True
+                logging.warning(f"Stream unavailable; using snapshot fallback: {snapshot_url}")
+                break
+
+        if snapshot_url is None:
+            service_up.labels(service=SERVICE_NAME).set(0)
+            logging.error("Exiting: Cannot open camera stream")
+            return
 
     service_up.labels(service=SERVICE_NAME).set(1)
     
@@ -273,15 +317,44 @@ def main() -> None:
     
     try:
         while True:
-            frame = read_frame(cap, timeout=FRAME_READ_TIMEOUT)
-            if frame is None:
-                logging.warning("Failed to read frame. Reconnecting...")
-                errors_total.labels(service=SERVICE_NAME, error_type='FrameReadError').inc()
-                health_state['camera_connected'] = False
-                cap = capture_stream(URL)
-                if not cap:
-                    break
-                continue
+            if snapshot_url:
+                frame = fetch_snapshot_frame(snapshot_url, timeout=FRAME_READ_TIMEOUT)
+                if frame is None:
+                    logging.warning("Snapshot read failed. Re-discovering camera endpoint...")
+                    errors_total.labels(service=SERVICE_NAME, error_type='FrameReadError').inc()
+                    health_state['camera_connected'] = False
+
+                    recovered = False
+                    for candidate in derive_snapshot_candidates(URL):
+                        frame = fetch_snapshot_frame(candidate, timeout=FRAME_READ_TIMEOUT)
+                        if frame is not None:
+                            snapshot_url = candidate
+                            health_state['camera_connected'] = True
+                            recovered = True
+                            break
+
+                    if not recovered:
+                        time.sleep(1.0)
+                        continue
+            else:
+                frame = read_frame(cap, timeout=FRAME_READ_TIMEOUT)
+                if frame is None:
+                    logging.warning("Failed to read frame. Reconnecting...")
+                    errors_total.labels(service=SERVICE_NAME, error_type='FrameReadError').inc()
+                    health_state['camera_connected'] = False
+                    cap = capture_stream(URL)
+                    if not cap:
+                        for candidate in derive_snapshot_candidates(URL):
+                            frame = fetch_snapshot_frame(candidate, timeout=FRAME_READ_TIMEOUT)
+                            if frame is not None:
+                                snapshot_url = candidate
+                                health_state['camera_connected'] = True
+                                logging.warning(f"Switched to snapshot fallback: {snapshot_url}")
+                                break
+
+                        if not snapshot_url:
+                            break
+                    continue
             
             publish_frame(producer, KAFKA_TOPIC, frame)
             time.sleep(frame_delay)

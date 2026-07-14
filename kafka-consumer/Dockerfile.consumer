@@ -14,9 +14,9 @@ COPY common/__init__.py /app/common/
 COPY common/health.py /app/common/
 
 # Copy the requirements file and install dependencies
-COPY kafka-consumer/pip_wheels/ /wheels/
+# COPY kafka-consumer/pip_wheels/ /wheels/
 COPY kafka-consumer/requirements.txt .
-RUN pip install --no-cache-dir --find-links=/wheels --no-index -r requirements.txt
+RUN pip install --no-cache-dir --find-links=/wheels -r requirements.txt
 
 # Copy the application code
 COPY kafka-consumer/preprocessor.py .

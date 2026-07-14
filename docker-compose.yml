@@ -28,7 +28,7 @@ services:
   # CORE INFRASTRUCTURE
   # -------------------------------------------------------
   zookeeper:
-    image: confluentinc/cp-zookeeper:7.5.0
+    image: confluentinc/cp-zookeeper:7.4.1
     container_name: kafka_zookeeper
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
@@ -45,7 +45,7 @@ services:
       - zookeeper_log:/datalog
 
   kafka:
-    image: confluentinc/cp-kafka:7.5.0
+    image: confluentinc/cp-kafka:7.4.1
     hostname: kafka
     container_name: kafka
     ports:
@@ -75,17 +75,16 @@ services:
       - kafka_data:/var/lib/kafka/data  
   
   kafdrop:
-    image: obsidiandynamics/kafdrop:3.30.0
+    image: obsidiandynamics/kafdrop:latest
     container_name: cv_kafdrop
     depends_on:
       - kafka
     environment:
       KAFKA_BROKERCONNECT: kafka:9092
     ports:
-      - "19000:9000"
+      - "9200:9000"
     restart: unless-stopped
   
-
 
   kafka-preprocessor:
     build: 
@@ -194,71 +193,72 @@ services:
       timeout: 10s
       retries: 3
     restart: unless-stopped
-#     # GPU support (uncomment when NVIDIA Container Toolkit is installed)
-#     # deploy:
-#     #   resources:
-#     #     reservations:
-#     #       devices:
-#     #         - driver: nvidia
-#     #           count: 1
-#     #           capabilities: [gpu]
+    runtime: nvidia
+    # GPU support (uncomment when NVIDIA Container Toolkit is installed)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
 
 
-  
-#   # -------------------------------------------------------
+  # -------------------------------------------------------
+  # -------------------------------------------------------
 #   # DATA STORAGE AND MANAGEMENT 
-#   minio-writer:
-#     build:
-#       context: .
-#       dockerfile: minio/Dockerfile.minio-writer
-#     depends_on:
-#       kafka:
-#         condition: service_healthy
-#       minio:
-#         condition: service_healthy
-#     environment:
-#       KAFKA_BROKER: kafka:9092
-#       KAFKA_TOPIC: ${KAFKA_TOPIC_3}
-#       KAFKA_VISUAL_TOPIC: yolo-visual-output
-#       KAFKA_DLQ_TOPIC: dlq-storage-errors
-#       CONSUMER_GROUP_ID: ${CONSUMER_GROUP_ID_5}
-#       FRAMES_CONSUMER_GROUP: frames-saver-group
-#       MINIO_ENDPOINT: minio:9000
-#       MINIO_ROOT_USER: minioadmin
-#       MINIO_ROOT_PASSWORD: minioadmin
-#       BUCKET_NAME: detections-data
-#       FRAMES_BUCKET_NAME: annotated-frames
-#       BATCH_SIZE: 50 # Write a file after 50 detections...
-#       BATCH_TIMEOUT_SEC: 30 # ...or every 30 seconds
-#       SAVE_ANNOTATED_FRAMES: "true"  # Save annotated frames to MinIO for review
-#       METRICS_PORT: 8003
-#     ports:
-#       - "8003:8003"
-#     healthcheck:
-#       test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
-#       interval: 30s
-#       timeout: 10s
-#       retries: 3
-#     restart: unless-stopped
+  minio-writer:
+    build:
+      context: .
+      dockerfile: minio/Dockerfile.minio-writer
+    depends_on:
+      kafka:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKER: kafka:9092
+      KAFKA_TOPIC: ${KAFKA_TOPIC_3}
+      KAFKA_VISUAL_TOPIC: yolo-visual-output
+      KAFKA_DLQ_TOPIC: dlq-storage-errors
+      CONSUMER_GROUP_ID: ${CONSUMER_GROUP_ID_5}
+      FRAMES_CONSUMER_GROUP: frames-saver-group
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+      BUCKET_NAME: detections-data
+      FRAMES_BUCKET_NAME: annotated-frames
+      BATCH_SIZE: 50 # Write a file after 50 detections...
+      BATCH_TIMEOUT_SEC: 30 # ...or every 30 seconds
+      SAVE_ANNOTATED_FRAMES: "true"  # Save annotated frames to MinIO for review
+      METRICS_PORT: 8003
+    ports:
+      - "8003:8003"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
 
 
-#   minio:
-#     image: minio/minio
-#     container_name: minio
-#     command: server /data --console-address ":9001"
-#     ports:
-#       - "9000:9000" # MinIO API
-#       - "9001:9001" # MinIO Console UI
-#     volumes:
-#       - minio_data:/data
-#     environment:
-#       MINIO_ROOT_USER: minioadmin
-#       MINIO_ROOT_PASSWORD: minioadmin
-#     healthcheck:
-#       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-#       interval: 30s
-#       timeout: 20s
-#       retries: 3
+  minio:
+    image: minio/minio
+    container_name: minio
+    command: server /data --console-address ":9001"
+    ports:
+      - "9100:9000" # MinIO API
+      - "9101:9001" # MinIO Console UI
+    volumes:
+      - minio_data:/data
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
    
 
 

@@ -77,8 +77,8 @@ KAFKA_DLQ_TOPIC: str = os.getenv("KAFKA_DLQ_TOPIC", "dlq-inference-errors")
 CONSUMER_GROUP_ID: str = os.getenv("CONSUMER_GROUP_ID", "yolo-inference-group")
 
 # Model configuration
-MODEL_WEIGHTS_PATH: str = os.getenv("MODEL_WEIGHTS_PATH", "yolo11n.pt")
-DEVICE: str = os.getenv("DEVICE", "cpu")
+MODEL_WEIGHTS_PATH: str = os.getenv("MODEL_WEIGHTS_PATH")
+DEVICE: str = os.getenv("DEVICE")
 METRICS_PORT: int = int(os.getenv("METRICS_PORT", "8002"))
 
 # Performance tuning
@@ -454,9 +454,9 @@ def main() -> None:
                         iou=0.5, 
                         persist=True, 
                         verbose=False, 
-                        device=DEVICE,
+                        device=selected_device,
                         imgsz=INPUT_SIZE,
-                        half=True if DEVICE != "cpu" else False
+                        half=True if selected_device != "cpu" else False
                     )
                 else:
                     # Simple detection is MUCH faster than tracking
@@ -465,9 +465,9 @@ def main() -> None:
                         conf=0.4,
                         iou=0.5, 
                         verbose=False, 
-                        device=DEVICE,
+                        device=selected_device,
                         imgsz=INPUT_SIZE,
-                        half=True if DEVICE != "cpu" else False
+                        half=True if selected_device != "cpu" else False
                     )
                 
                 if not results:

@@ -1,14 +1,21 @@
-# Use a Python base image with CUDA support option
-# This image works for both CPU and GPU (CUDA libraries installed but optional)
-FROM python:3.12-slim
+# Use NVIDIA L4T ML base image for Jetson with CUDA-enabled PyTorch preinstalled
+# r36.2.0 corresponds to JetPack 6.1
+FROM nvcr.io/nvidia/l4t-ml:r36.2.0-py3
 
-# Install system dependencies
+# Install additional system dependencies
 # Added curl for healthchecks
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         libgl1 \
         libglib2.0-0 \
-        curl && \
+        curl \
+        wget \
+        ca-certificates \
+        python3-pip \
+        python3-opencv && \
+    wget -q http://ports.ubuntu.com/pool/main/libf/libffi/libffi8_3.4.2-4_arm64.deb -O /tmp/libffi8.deb && \
+    dpkg -i /tmp/libffi8.deb && \
+    rm -f /tmp/libffi8.deb && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -18,13 +25,13 @@ COPY common/__init__.py /app/common/
 COPY common/health.py /app/common/
 COPY common/gpu_utils.py /app/common/
 
-COPY model/pip_wheels/ /wheels/
-COPY model/requirements.txt .
+COPY model/requirements.txt /tmp/requirements.txt
 
+RUN python3 -m pip install --no-cache-dir --upgrade pip && \
+    python3 -m pip install --no-cache-dir -r /tmp/requirements.txt
 
-RUN pip install --no-cache-dir --find-links=/wheels --no-index -r requirements.txt
 
 COPY model/yolo11n.pt .
 COPY model/model_inference.py .
 
-CMD ["python", "model_inference.py"]
+CMD ["python3", "model_inference.py"]
